@@ -32,7 +32,7 @@ Type, spacing and colors come from the active Herdr theme; the mod sets no fixed
 ## Built from
 
 - **Layout:** one `block` node with `content: { "mod": "fleet-quota", "props": { "part": "bar" } }` and `size: { "px": 118 }` (see `examples/bar-block.json`; it is a fragment for a row, not a layout). The dialog is an overlay the mod opens itself, not a layout node.
-- **`mod.json`:** `{ "place": "none", "title": "Fleet quota" }` — nothing is docked automatically; a layout must place the block.
+- **`mod.json`:** `place: "none"` prevents automatic docking; `overlay: { "width": 620, "height": 560 }` also sizes the detail when opened through `mod.open`.
 - **`main.js`:** a gpui-kit `View`. Renders the badge when `props().part === "bar"`, otherwise the dialog panel. `openOverlay({ mod: "fleet-quota", kind: "dialog", width: 620, height: 560, props: { part: "panel" } })`. Uses `checking()` to skip all reads during `herdr-app check`, `cx.timer.every(60000, …)`, `cx.spawn`, `cx.notify`, `theme()`, `props()`, `closeOverlay`.
 - **`fleet.js`:** `collectFleet({ listMachines, readHost, previous, now, concurrency })`. Local machine first, then `hc machine ls --json` names sorted; skips duplicates, invalid names and non-connected machines; bounded worker pool (max 4); carries previous rows on offline/error; `no-data` on exit 4.
 - **`model.js`:** `READ_SCRIPT` (POSIX `sh` + `jq`) and `parseQuota(output, now)`. The script reads `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), at most 64 `*.json` files of at most 256 KiB each, and the optional `$XDG_CONFIG_HOME/omarchy/shell.json` for disabled providers and `refreshIntervalSec`. It refuses symlinks, oversized or invalid files, and emits only bounded quota fields.
@@ -52,7 +52,7 @@ Reading semantics in one place: record percentages are fractions (`0.42` → `42
 - **Nothing is summed.** The same provider on two machines stays two rows, and two accounts stay separate, because the mod cannot verify whether logins share one quota.
 - **Unknown is not zero.** `? used` and `no percentage` both mean "not known", never "0% used".
 - **Renaming the folder** requires updating `content.mod` in the layout, the `mod` name in `main.js`'s `openOverlay` call, and the `mods/fleet-quota/…` asset paths (including `icons/`); `mod.json` places nothing by default.
-- **Overlay width/height live in code**, not `mod.json`, so a fresh build should keep the `openOverlay` call in `main.js`.
+- **Overlay width/height** in `main.js` and `mod.json` must match: the badge uses `openOverlay`, while `herdr-app do mod.open --name fleet-quota` uses the manifest.
 
 ## Done when
 

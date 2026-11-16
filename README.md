@@ -32,6 +32,8 @@ A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine a
 2. Add the block from `examples/bar-block.json` to a row in your layout, where the badge should sit. It is a fragment, not a whole layout — keep your own layout and `keys.json`; this repository ships neither.
 3. Verify: `herdr-app check ~/.config/herdr-app/mods/fleet-quota`, then `herdr-app status` for errors, then `herdr-app shot` to see the badge.
 
+You can also open the detail directly with `herdr-app do mod.open --name fleet-quota`.
+
 On updates, review the changed files and back up only the mod folder. Do not rsync over `~/.config/herdr-app` or replace your layout and keys wholesale.
 
 ## Reading the numbers
