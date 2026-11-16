@@ -8,6 +8,7 @@ const { pathToFileURL } = require('node:url');
 const root = path.join(__dirname, '..');
 const helper = path.join(root, 'scripts/refresh.py');
 const installer = path.join(root, 'scripts/install-refresh.sh');
+const loadModel = () => import(pathToFileURL(path.join(root, 'mods/fleet-quota/model.js')));
 
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hfq-'));
@@ -22,13 +23,28 @@ function fixture(t) {
     OMARCHY_PATH: omarchy, TMPDIR: home };
   return { home, state, usage, control, omarchy, env };
 }
-function collector(x, id, body) {
+function collector(x, id, body, payload = false) {
   const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
   if (id === 'claude') {
     fs.writeFileSync(file, `#!/usr/bin/env python3
-import json,os,subprocess,sys
+import datetime,json,math,os,subprocess,sys,time
 from pathlib import Path
 AGENT_ID='claude'
+def usage_bucket(payload,key):
+    value=payload.get(key)
+    return value if isinstance(value,dict) else None
+def normalize_utilization(value):
+    if type(value) not in (int,float) or not math.isfinite(value) or value<0:
+        return -1
+    return min(1,value/100)
+def scoped_limits(payload):
+    rows=[]
+    for entry in payload.get('limits',[]):
+        percent=normalize_utilization(entry.get('percent'))
+        model=entry.get('scope',{}).get('model',{})
+        if percent>=0 and model.get('display_name'):
+            rows.append({'label':model['display_name'],'percent':percent,'resetsAt':''})
+    return rows
 def local_stats(claude_dir,max_age,use_index=True):
     (Path(os.environ['HOME'])/'history-touched').write_text('must not scan')
     raise RuntimeError('history scan must be bypassed')
@@ -47,6 +63,19 @@ def main():
     except (ValueError,UnicodeError):
         sys.stdout.buffer.write(result.stdout)
         return 0
+    if ${payload ? 'True' : 'False'}:
+        with (Path(os.environ['HOME'])/'api-calls').open('a') as calls:
+            calls.write('one-response\\n')
+        limits=[]
+        for key in ('five_hour','seven_day'):
+            bucket=usage_bucket(record,key)
+            if bucket is not None:
+                percent=normalize_utilization(bucket.get('utilization'))
+                if percent>=0:
+                    limits.append({'label':key,'percent':percent,'resetsAt':''})
+        limits.extend(scoped_limits(record))
+        record={'id':AGENT_ID,'limits':limits,'limitsFetchedAt':time.time_ns()//1000000 if limits else 0,
+                'updatedAt':datetime.datetime.now(datetime.timezone.utc).isoformat()}
     record['hasLocalStats']=True
     emit(record,sort_keys=True)
     return 0
@@ -113,6 +142,9 @@ test('unsupported Claude private interface fails closed without scanning or CLI 
     source => source + '\nlocal_stats = None\n',
     source => source + '\nmain = None\n',
     source => source + '\nemit = None\n',
+    source => source + '\nscoped_limits = None\n',
+    source => source.replace('def usage_bucket(payload,key):', 'def usage_bucket(payload):'),
+    source => source + '\nnormalize_utilization = None\n',
   ];
   for (const mutate of mutations) {
     const x = fixture(t), old = record('claude');
@@ -208,7 +240,7 @@ test('default OMARCHY_PATH is exported without invoking a real collector', (t) =
 });
 
 async function assertUnknown(x) {
-  const model = await import(pathToFileURL(path.join(root, 'mods/fleet-quota/model.js')));
+  const model = await loadModel();
   const read = spawnSync('bash', ['-c', model.READ_SCRIPT], { env: x.env, encoding: 'utf8' });
   assert.equal(read.status, 0, read.stderr);
   const rows = model.parseQuota(read.stdout, Date.now()).rows;
@@ -218,6 +250,96 @@ async function assertUnknown(x) {
     assert.equal(model.availabilityOf(row, { hostStatus: 'ok', now: Date.now() }).state, 'unknown');
   }
 }
+
+async function assertCapacity(x, expected) {
+  const model = await loadModel();
+  const read = spawnSync('bash', ['-c', model.READ_SCRIPT], { env: x.env, encoding: 'utf8' });
+  assert.equal(read.status, 0, read.stderr);
+  const rows = model.parseQuota(read.stdout, Date.now()).rows;
+  if (model.availabilityOf) {
+    if (expected === 'unknown' && !rows.length) {
+      assert.equal(model.availabilityOf(undefined, { hostStatus: 'ok', now: Date.now() }).state, 'unknown');
+      return;
+    }
+    assert.ok(rows.length);
+    for (const row of rows) assert.equal(model.availabilityOf(row, { hostStatus: 'ok', now: Date.now() }).state, expected);
+  } else if (expected !== 'unknown') {
+    assert.ok(rows.length);
+    assert.ok(rows.every(row => !row.stale));
+  }
+}
+
+test('extra-only monthly spend uses the same response, preserving zero and overage without invented reset', async (t) => {
+  for (const used of [0, 0.001, 25, 100, 125]) {
+    const x = fixture(t);
+    collector(x, 'claude', json({ extra_usage: {
+      is_enabled: true, monthly_limit: 100, used_credits: used, utilization: 99,
+    } }), true);
+    const r = run(x, ['claude']);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const output = saved(x, 'claude');
+    assert.deepEqual(output.limits, [{ label: 'Monthly spend', percent: used / 100, resetsAt: '' }]);
+    assert.equal(output.hasLocalStats, false);
+    assert.equal(fs.readFileSync(path.join(x.home, 'api-calls'), 'utf8'), 'one-response\n');
+    assert.equal(calls(x), 'claude --limits-only\n');
+    assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+    await assertCapacity(x, used >= 100 ? 'exhausted' : 'available');
+  }
+});
+
+test('monthly fallback ignores disabled, missing, malformed, nonfinite and zero-cap fields', async (t) => {
+  const valid = { is_enabled: true, monthly_limit: 100, used_credits: 25 };
+  const extras = [null, [], {}, { ...valid, is_enabled: false }, { ...valid, is_enabled: 1 },
+    ...[0, -1, true, '100', null].map(monthly_limit => ({ ...valid, monthly_limit })),
+    ...[-1, true, '25', null].map(used_credits => ({ ...valid, used_credits })),
+    { is_enabled: true, monthly_limit: 100, utilization: 25 },
+    { is_enabled: true, used_credits: 0 },
+  ];
+  const bodies = extras.map(extra_usage => json({ extra_usage }));
+  for (const field of ['monthly_limit', 'used_credits']) {
+    for (const value of ['NaN', 'Infinity', '-Infinity']) {
+      bodies.push(`printf '%s' '${JSON.stringify({ extra_usage: { ...valid, [field]: 'NONFINITE' } }).replace('"NONFINITE"', value)}'`);
+    }
+  }
+  for (const body of bodies) {
+    const x = fixture(t);
+    collector(x, 'claude', body, true);
+    assert.equal(run(x, ['claude']).status, 1);
+    assert.deepEqual(saved(x, 'claude').limits, []);
+    assert.equal(saved(x, 'claude').limitsStale, true);
+    assert.equal(fs.readFileSync(path.join(x.home, 'api-calls'), 'utf8'), 'one-response\n');
+    await assertCapacity(x, 'unknown');
+  }
+});
+
+test('native session, weekly or scoped quota suppresses optional monthly fallback', async (t) => {
+  const scopes = [{ percent: 40, scope: { model: { display_name: 'Model weekly' } } }];
+  for (const native of [{ five_hour: { utilization: 0 } }, { seven_day: { utilization: 20 } }, { limits: scopes }]) {
+    const x = fixture(t);
+    collector(x, 'claude', json({ ...native,
+      extra_usage: { is_enabled: true, monthly_limit: 100, used_credits: 150 },
+    }), true);
+    assert.equal(run(x, ['claude']).status, 0);
+    const windows = saved(x, 'claude').limits;
+    assert.equal(windows.length, 1);
+    assert.equal(windows[0].label, native.five_hour ? 'five_hour' : native.seven_day ? 'seven_day' : 'Model weekly');
+    assert.equal(windows[0].percent, native.five_hour ? 0 : native.seven_day ? 0.2 : 0.4);
+    assert.equal(fs.readFileSync(path.join(x.home, 'api-calls'), 'utf8'), 'one-response\n');
+    await assertCapacity(x, 'available');
+  }
+});
+
+test('monthly reset is only a valid provider timestamp, never a computed next month', (t) => {
+  for (const reset of ['2030-03-04T05:06:07Z', '2030-03-04', 'invalid', null]) {
+    const x = fixture(t);
+    collector(x, 'claude', json({ extra_usage: {
+      is_enabled: true, monthly_limit: 100, used_credits: 1, resets_at: reset,
+    } }), true);
+    assert.equal(run(x, ['claude']).status, 0);
+    assert.equal(saved(x, 'claude').limits[0].resetsAt,
+      reset === '2030-03-04T05:06:07Z' ? '2030-03-04T05:06:07+00:00' : '');
+  }
+});
 
 test('5s cached 429/reset rewrite preserves exhausted values and remains unknown', async (t) => {
   const x = fixture(t);

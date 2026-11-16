@@ -34,7 +34,9 @@ CLAUDE_QUOTA_DIAGNOSTICS = {
 # Private Omarchy interface: preserve native quota/auth/cache handling, but
 # bypass the transcript scan that even --limits-only performs on a cold cache.
 CLAUDE_QUOTA_BOOTSTRAP = """
+import datetime
 import inspect
+import math
 import runpy
 import sys
 
@@ -45,12 +47,18 @@ try:
         raise ValueError('unsupported main')
     scope = main.__globals__
     local_stats, emit = scope.get('local_stats'), scope.get('emit')
+    scoped_limits = scope.get('scoped_limits')
+    usage_bucket = scope.get('usage_bucket')
+    normalize_utilization = scope.get('normalize_utilization')
     if (scope.get('AGENT_ID') != 'claude' or not callable(local_stats)
             or not callable(emit) or not {'local_stats', 'emit'} <= set(main.__code__.co_names)):
         raise ValueError('unsupported collector')
     inspect.signature(main).bind()
     inspect.signature(local_stats).bind(None, 0, use_index=True)
     inspect.signature(emit).bind({}, sort_keys=True)
+    inspect.signature(scoped_limits).bind({})
+    inspect.signature(usage_bucket).bind({}, 'five_hour')
+    inspect.signature(normalize_utilization).bind(0)
 except Exception:
     raise SystemExit(78) from None
 
@@ -61,8 +69,48 @@ def quota_emit(record, **kwargs):
     record['hasLocalStats'] = False
     return emit(record, **kwargs)
 
+def amount(value):
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+def quota_scopes(payload):
+    original = scoped_limits(payload)
+    if not isinstance(original, list):
+        raise SystemExit(78)
+    if any(isinstance(row, dict) and amount(row.get('percent')) is not None for row in original):
+        return original
+    for key in ('five_hour', 'seven_day'):
+        bucket = usage_bucket(payload, key)
+        if bucket is not None and amount(normalize_utilization(bucket.get('utilization'))) is not None:
+            return original
+    extra = payload.get('extra_usage')
+    if not isinstance(extra, dict) or extra.get('is_enabled') is not True:
+        return original
+    cap, used = amount(extra.get('monthly_limit')), amount(extra.get('used_credits'))
+    if cap is None or cap <= 0 or used is None:
+        return original
+    percent = used / cap
+    if not math.isfinite(percent):
+        return original
+    reset = ''
+    raw_reset = extra.get('resets_at')
+    if isinstance(raw_reset, str):
+        try:
+            parsed = datetime.datetime.fromisoformat(raw_reset.replace('Z', '+00:00'))
+            if parsed.tzinfo is not None:
+                reset = parsed.isoformat()
+        except ValueError:
+            pass
+    return original + [{'label': 'Monthly spend', 'percent': percent, 'resetsAt': reset}]
+
 scope['local_stats'] = no_history
 scope['emit'] = quota_emit
+scope['scoped_limits'] = quota_scopes
 sys.argv = [sys.argv[1], '--limits-only']
 raise SystemExit(main())
 """
