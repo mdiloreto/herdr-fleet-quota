@@ -43,6 +43,8 @@ There is no fleet-wide "highest used" or "incomplete" headline. Type, spacing an
 
 The headless Claude path loads the installed collector in a separate Python process, validates its expected interface and skips `local_stats` before invoking its original collection entrypoint. This avoids cold conversation-history scans while preserving native authentication and quota handling. Output declares `hasLocalStats: false`. Copilot continues through its native CLI. The adapter's private-interface compatibility is verified against the installed Omarchy version, not promised for every future version.
 
+If the native Claude response has no usable standard/scoped windows, enabled `extra_usage` with a finite positive monthly cap and nonnegative used credits supplies a `Monthly spend` window. It uses the original ratio, including zero and overage, and never invents a month-end reset or makes another request.
+
 Reading semantics: raw used fractions determine remaining capacity before display rounding. A positive exact balance can confirm capacity without a funded amount. Every reported constraint in an account must have positive remaining capacity; unknown, estimated, omitted or expired constraints prevent that account from qualifying. Producer/account fetch times determine freshness, with the larger of 30 minutes and twice the declared collector interval as the age limit. The bar groups provider identity only, never percentages or balances.
 
 ## Watch out
