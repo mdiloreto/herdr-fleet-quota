@@ -22,6 +22,14 @@ NATIVE_STATUS_MESSAGES = {
     "Waiting for auth": "native status: Waiting for auth",
     "Claude limits unavailable": "native status: Claude limits unavailable",
 }
+CLAUDE_QUOTA_DIAGNOSTICS = {
+    "Anthropic's usage endpoint is rate limiting checks right now": "native quota endpoint rate limited",
+    "Couldn't reach Anthropic's usage endpoint.": "native quota endpoint unreachable",
+    "Anthropic refused Claude Code's sign-in.": "native quota endpoint refused sign-in",
+    "Anthropic's usage endpoint returned an invalid answer.": "native quota endpoint invalid data",
+    "Anthropic's usage endpoint returned no limits.": "native quota endpoint missing quota data",
+    "Anthropic's usage endpoint returned status ": "native quota endpoint rejected request",
+}
 
 # Private Omarchy interface: preserve native quota/auth/cache handling, but
 # bypass the transcript scan that even --limits-only performs on a cold cache.
@@ -283,6 +291,11 @@ def refresh(provider: str, usage: Path, control: Path, environment: dict[str, st
             native_status = new.get("usageStatusText")
             if isinstance(native_status, str) and native_status in NATIVE_STATUS_MESSAGES:
                 log(provider, NATIVE_STATUS_MESSAGES[native_status])
+            if provider == "claude" and isinstance(new.get("authHelpText"), str):
+                for prefix, message in CLAUDE_QUOTA_DIAGNOSTICS.items():
+                    if new["authHelpText"].startswith(prefix):
+                        log(provider, message)
+                        break
             record, success = merge(new, old, started_ms, observed_ms)
         except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired):
             log(provider, "collector unavailable, timed out, or invalid; retaining prior quota")

@@ -158,6 +158,48 @@ test('only exact whitelisted native statuses are logged, without extra probes', 
   }
 });
 
+test('Claude help prefixes produce only fixed diagnostics without suffixes or extra probes', (t) => {
+  const known = [
+    ["Anthropic's usage endpoint is rate limiting checks right now", 'rate limited'],
+    ["Couldn't reach Anthropic's usage endpoint.", 'unreachable'],
+    ["Anthropic refused Claude Code's sign-in.", 'refused sign-in'],
+    ["Anthropic's usage endpoint returned an invalid answer.", 'invalid data'],
+    ["Anthropic's usage endpoint returned no limits.", 'missing quota data'],
+    ["Anthropic's usage endpoint returned status ", 'rejected request'],
+  ];
+  for (const [prefix, diagnostic] of known) {
+    for (const provider of ['claude', 'copilot']) {
+      const x = fixture(t);
+      collector(x, provider, live(record(provider, { limits: [],
+        authHelpText: `${prefix}599 SECRET-token\nSECRET-body`,
+      })));
+      const r = run(x, [provider]);
+      assert.equal(r.status, 1);
+      const output = r.stdout + r.stderr;
+      if (provider === 'claude') assert.ok(output.includes(`native quota endpoint ${diagnostic}\n`));
+      else assert.doesNotMatch(output, /native quota endpoint/);
+      assert.doesNotMatch(output, /SECRET|599|Anthropic|Traceback/);
+      assert.equal(calls(x), `${provider} --limits-only\n`);
+      const retry = run(x, [provider]);
+      assert.equal(retry.status, 0);
+      assert.match(retry.stdout, /retry deferred/);
+      assert.doesNotMatch(retry.stdout + retry.stderr, /native quota endpoint|SECRET/);
+      assert.equal(calls(x), `${provider} --limits-only\n`);
+    }
+  }
+});
+
+test('unknown or non-string help never produces a diagnostic or exposes content', (t) => {
+  for (const value of ['SECRET-arbitrary', "SECRET-prefix Anthropic's usage endpoint returned no limits.",
+    "anthropic's usage endpoint returned no limits.", null, 599, ['SECRET-array'], { token: 'SECRET-object' }]) {
+    const x = fixture(t);
+    collector(x, 'claude', live(record('claude', { limits: [], authHelpText: value })));
+    const r = run(x, ['claude']);
+    assert.equal(r.status, 1);
+    assert.doesNotMatch(r.stdout + r.stderr, /native quota endpoint|SECRET|599|Traceback/);
+  }
+});
+
 test('default OMARCHY_PATH is exported without invoking a real collector', (t) => {
   const x = fixture(t);
   delete x.env.OMARCHY_PATH;
