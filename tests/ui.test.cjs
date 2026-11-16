@@ -127,6 +127,11 @@ const COLORS = {
   unknown: "#888",
   working: "#e0b341",
   idle: "#9a9a9a",
+  ansi3: "#e6ad62",
+  ansi4: "#6d9eef",
+  ansi5: "#b595e9",
+  ansi6: "#64cbb6",
+  ansi13: "#ea96bc",
 };
 
 // Every fluent method the mod uses, recorded with the value it was given, so a
@@ -138,7 +143,7 @@ const BUILDER_METHODS = [
   "p", "px", "py", "pt", "pb", "pl", "rounded", "bg", "border", "border_b",
   "border_color", "text_size", "text_color", "truncate", "font_semibold",
   "font_medium", "overflow_y_scrollbar", "overflow_hidden", "cursor_pointer",
-  "max_w", "line_height",
+  "max_w", "line_height", "flex_wrap", "border_l", "border_t", "opacity", "text_right",
 ];
 
 function element(kind) {
@@ -558,7 +563,8 @@ test("meters show zero as zero, unknown as unknown, and old apart from current",
   const stale = byId(tree, "fleet-window-fill-3-0-0");
   assert.ok(stale, "an old reading keeps its meter");
   assert.equal(stale.props.w, "80%");
-  assert.notEqual(stale.props.bg, current.props.bg, "old and current fills are distinguishable");
+  assert.ok(stale.props.opacity < current.props.opacity, "old fills are subdued without losing provider color");
+  assert.notEqual(stale.props.bg, COLORS.dim, "old readings must not become gray");
 
   const track = byId(tree, "fleet-window-track-0-0-2");
   assert.equal(track.props.role, "progress_indicator");
@@ -569,6 +575,158 @@ test("meters show zero as zero, unknown as unknown, and old apart from current",
   const percentCells = nodes(tree).filter((value) => String(value.id).startsWith("fleet-window-pct-"));
   assert.ok(percentCells.length >= 8, "every window has a percentage cell");
   assert.equal(new Set(percentCells.map((value) => value.props.w)).size, 1, "percentage cells share one width");
+});
+
+test("provider identity survives old records and switches with the theme", () => {
+  installHerdr({ checking: true });
+  const mod = new Mod();
+  mod.init({}, makeCx());
+  const light = {
+    ...COLORS, canvas: "#ffffff", surface: "#f8f8f8", raised: "#eeeeee", foreground: "#111111",
+    muted: "#555555", ansi3: "#8b5100", ansi4: "#244fab", ansi5: "#7143a0",
+    ansi6: "#096e62", ansi13: "#a02c6b", accent: "#125dc1",
+  };
+  for (const t of [COLORS, light]) {
+    for (const [id, token] of [["claude", "ansi3"], ["codex", "ansi6"], ["copilot", "ansi5"],
+      ["openrouter", "ansi4"], ["agy", "ansi13"], ["someone", "accent"]]) {
+      const row = { id, used: 42, updatedAt: CLAUDE_UPDATED, windows: [{ label: "Quota", used: 42 }] };
+      const current = mod.provider(t, row, 0, 0, NOW);
+      const old = mod.provider(t, { ...row, stale: true }, 0, 0, NOW);
+      assert.equal(byId(old, "fleet-provider-0-0").props.border_color, t[token]);
+      assert.equal(byId(current, "fleet-window-fill-0-0-0").props.bg, t[token]);
+      assert.equal(byId(old, "fleet-window-fill-0-0-0").props.bg, t[token], "old does not erase identity");
+      assert.ok(texts(current).includes("current"));
+      assert.ok(!texts(current).includes("old"));
+      assert.ok(texts(old).includes("old"));
+      assert.ok(!texts(old).includes("current"));
+      assert.match(byId(old, "fleet-window-track-0-0-0").props.label, /earlier reading/);
+      assert.ok(nodes(old).some((node) => node.props.bg === t[token]
+        && nodes(node).some((child) => child.kind === "svg")), "provider icon has a colored tile");
+    }
+  }
+});
+
+test("warning thresholds emphasize reported usage without recoloring provider identity", () => {
+  const mod = new Mod();
+  for (const [used, expected] of [[0, COLORS.ansi6], [79, COLORS.ansi6], [80, COLORS.working],
+    [94, COLORS.working], [95, COLORS.blocked], [100, COLORS.blocked]]) {
+    for (const stale of [false, true]) {
+      const tree = mod.provider(COLORS, { id: "codex", used, stale, windows: [{ label: "Week", used }] }, 0, 0, NOW);
+      assert.equal(byId(tree, "fleet-window-fill-0-0-0").props.bg, expected);
+      assert.equal(byId(tree, "fleet-provider-0-0").props.border_color, COLORS.ansi6);
+      assert.ok(texts(tree).includes(stale ? "old" : "current"));
+    }
+  }
+});
+
+test("a known maximum does not hide an unknown window in the same row", () => {
+  installHerdr({ checking: true });
+  const mod = new Mod();
+  mod.init({}, makeCx());
+  const row = { id: "openrouter", used: 40, stale: false, windows: [] };
+  mod.hosts = [{ name: null, label: "This computer", status: "ok", errors: 0, rows: [row] }];
+  for (const unknown of [
+    { label: "Balance 25.00 USD", used: null, isBalance: true },
+    { label: "Expired window", used: null, resetsAt: "2000-01-01T00:00:00Z" },
+  ]) {
+    row.windows = [{ label: "Key limit", used: 40 }, unknown];
+    assert.equal(mod.summary().incomplete, true);
+    assert.ok(texts(mod.bar(COLORS)).includes("AI 40%!"));
+    const panel = mod.panel(COLORS);
+    assert.ok(texts(byId(panel, "fleet-highest")).includes("40%"));
+    assert.ok(texts(byId(panel, "fleet-coverage")).includes("! incomplete"));
+    assert.ok(!texts(byId(panel, "fleet-host-0")).includes("error"));
+    assert.equal(byId(panel, "fleet-window-fill-0-0-1"), null);
+  }
+  row.windows = [{ label: "Key limit", used: 40 }, { label: "Unused window", used: 0 }];
+  assert.equal(mod.summary().incomplete, false, "known zero is complete coverage");
+  assert.ok(texts(mod.bar(COLORS)).includes("AI 40%"));
+  row.used = 0;
+  row.windows = [{ label: "Unused window", used: 0 }];
+  assert.equal(mod.summary().incomplete, false);
+  assert.ok(texts(mod.bar(COLORS)).includes("AI 0%"));
+});
+
+test("summary reports a maximum and coverage separately, never a combined quota", () => {
+  installHerdr({ checking: true });
+  const mod = new Mod();
+  mod.init({}, makeCx());
+  const first = { name: "a", label: "a", status: "ok", errors: 0,
+    rows: [{ id: "claude", accountLabel: "Work", used: 60, windows: [{ used: 60 }] }] };
+  const second = { name: "b", label: "b", status: "ok", errors: 0,
+    rows: [{ id: "codex", used: 20, stale: true, windows: [{ used: 20 }] }] };
+  mod.hosts = [first, second];
+  let tree = mod.panel(COLORS);
+  assert.ok(texts(byId(tree, "fleet-highest")).includes("60%"));
+  assert.ok(!texts(byId(tree, "fleet-highest")).includes("80%"));
+  assert.ok(texts(byId(tree, "fleet-highest")).includes("Claude · a · Work"));
+  assert.ok(texts(byId(tree, "fleet-highest")).includes("current"));
+  assert.ok(texts(byId(tree, "fleet-coverage")).includes("2 / 2"));
+  assert.ok(texts(mod.bar(COLORS)).includes("AI 60%"), "an old lower row does not mark the maximum old");
+
+  first.rows[0].stale = true;
+  first.rows.push({ id: "openrouter", used: null, windows: [{ label: "Balance", isBalance: true, used: null }] });
+  tree = mod.panel(COLORS);
+  assert.ok(texts(byId(tree, "fleet-highest")).includes("old"));
+  assert.ok(texts(byId(tree, "fleet-coverage")).includes("! incomplete"));
+  assert.ok(texts(mod.bar(COLORS)).includes("AI 60%~!"));
+  assert.ok(!texts(byId(tree, "fleet-coverage")).includes("error"), "an unmetered balance is not a provider error");
+
+  mod.hosts = [{ ...first, rows: [{ id: "openrouter", used: null, windows: [{ isBalance: true, used: null }] }] }];
+  tree = mod.panel(COLORS);
+  assert.ok(texts(byId(tree, "fleet-highest")).includes("—"));
+  assert.ok(!texts(byId(tree, "fleet-highest")).includes("0%"));
+  assert.equal(byId(tree, "fleet-window-fill-0-0-0"), null);
+});
+
+test("unknown prototype-like provider ids and long labels preserve their actual identity", () => {
+  const mod = new Mod();
+  for (const id of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    const accountLabel = "Long account ".repeat(20);
+    const label = "A quota window with a very long label ".repeat(10);
+    const hostLabel = "host-".repeat(30);
+    const tree = mod.host(COLORS, { name: hostLabel, label: hostLabel, status: "offline",
+      rows: [{ id, accountLabel, used: 25, windows: [{ label, used: 25 }] }] }, 0, NOW);
+    assert.ok(texts(tree).includes(id));
+    assert.ok(nodes(tree).some((node) => node.props.path === "mods/fleet-quota/icons/provider.svg"));
+    for (const fullLabel of [id, accountLabel, label, hostLabel]) {
+      assert.ok(nodes(tree).some((node) => node.props.tooltip === fullLabel && node.props.label === fullLabel));
+    }
+    assert.ok(texts(tree).includes("offline"));
+    assert.ok(texts(tree).includes("old"), "a carried row is old even if the row flag is absent");
+    assert.ok(!texts(tree).includes("current"));
+    assert.ok(texts(tree).includes("25% used"));
+  }
+});
+
+test("reset hints stay short without Intl and timestamps never invent freshness", () => {
+  const mod = new Mod();
+  const now = new Date(2026, 10, 16, 10, 0).getTime();
+  const future = new Date(2026, 10, 18, 14, 5);
+  const row = { id: "claude", used: 42, windows: [{ label: "Week", used: 42, resetsAt: future.toISOString() }] };
+  const originalDate = Date.prototype.toLocaleDateString;
+  const originalTime = Date.prototype.toLocaleTimeString;
+  try {
+    Date.prototype.toLocaleDateString = () => "UNSUPPORTED DATE OPTIONS";
+    Date.prototype.toLocaleTimeString = () => "UNSUPPORTED TIME OPTIONS";
+    const tree = mod.provider(COLORS, { ...row, updatedAt: new Date(2026, 10, 1).toISOString(), stale: true }, 0, 0, now);
+    assert.ok(texts(tree).includes("resets Nov 18 · 14:05"));
+    assert.ok(texts(tree).includes("record Nov 1"));
+    assert.ok(nodes(tree).some((node) => node.props.tooltip === future.toLocaleString()));
+    assert.ok(!texts(tree).some((text) => text.includes("UNSUPPORTED")));
+  } finally {
+    Date.prototype.toLocaleDateString = originalDate;
+    Date.prototype.toLocaleTimeString = originalTime;
+  }
+  for (const resetsAt of [null, "", "not-a-date"]) {
+    assert.ok(texts(mod.window(COLORS, { used: null, resetsAt }, row, 0, 0, 0, now)).includes("resets ?"));
+  }
+  assert.ok(texts(mod.window(COLORS, { used: null, resetsAt: now - 1 }, row, 0, 0, 0, now)).includes("reset passed"));
+  const futureRecord = mod.provider(COLORS, { ...row, stale: true, updatedAt: future.toISOString() }, 0, 0, now);
+  assert.ok(texts(futureRecord).includes("record future timestamp"));
+  assert.ok(!texts(futureRecord).includes("record just now"));
+  const missing = mod.provider(COLORS, { ...row, stale: true, updatedAt: "" }, 0, 0, now);
+  assert.ok(texts(missing).includes("Record time unknown"));
 });
 
 test("a failed reading keeps the hosts on screen and says so", async () => {
