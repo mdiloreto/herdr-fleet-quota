@@ -22,8 +22,8 @@ const ok = (stdout) => ({ code: 0, stdout });
 const names = (fleet) => fleet.hosts.map((host) => host.name);
 const asOld = (rows) => rows.map((row) => ({ ...row, stale: true }));
 
-test("rejects unusable records, drops invalid windows and clamps overage", async () => {
-  const { parseQuota } = await modelPromise;
+test("rejects unusable records, preserves unknown windows and clamps overage", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
   const output = [
     line("claude", 1.4, { limits: [{ label: "Session", percent: 1.4 }, { label: "Weekly", percent: 0.5 }] }),
     line("codex", 2),
@@ -36,11 +36,12 @@ test("rejects unusable records, drops invalid windows and clamps overage", async
   ].join("\n");
   const result = parseQuota(output, now);
   assert.deepEqual(result.rows.map((row) => [row.id, row.used, row.stale]), [
-    ["claude", 100, false], ["codex", 100, false],
+    ["claude", 100, false], ["codex", 100, false], ["gemini", null, false],
   ]);
   assert.equal(result.rows[0].windows[0].used, 100);
   assert.equal(result.rows[0].updatedAt, recent);
   assert.equal(result.errors, 4);
+  assert.equal(availabilityOf(result.rows[2], { hostStatus: "ok", now }).state, "unknown");
 });
 
 test("marks stale producer data and old or future timestamps without inventing a zero", async () => {
@@ -61,8 +62,8 @@ test("marks stale producer data and old or future timestamps without inventing a
   assert.equal(result.errors, 0);
 });
 
-test("expired windows stay unknown, never zero, and a fully expired record has no percentage", async () => {
-  const { parseQuota } = await modelPromise;
+test("expired windows stay unknown without mislabelling a fresh producer reading as stale", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
   const records = [
     { id: "mixed", updatedAt: recent, limits: [
       { label: "Session", percent: 0.2, resetsAt: "2026-11-15T11:00:00Z" },
@@ -74,10 +75,13 @@ test("expired windows stay unknown, never zero, and a fully expired record has n
   const result = parseQuota(records.map(JSON.stringify).join("\n"), now);
   const mixed = result.rows.find((row) => row.id === "mixed");
   assert.deepEqual(mixed.windows.map((w) => [w.label, w.used]), [["Session", null], ["Weekly", 60]]);
-  assert.deepEqual([mixed.used, mixed.stale], [60, true]);
+  assert.deepEqual([mixed.used, mixed.stale], [60, false]);
   assert.deepEqual(result.rows.map((row) => [row.id, row.used, row.stale]), [
-    ["mixed", 60, true], ["a-expired", null, true], ["z-expired", null, true],
+    ["mixed", 60, false], ["a-expired", null, false], ["z-expired", null, false],
   ]);
+  for (const row of result.rows) assert.deepEqual(availabilityOf(row, { hostStatus: "ok", now }), {
+    state: "unknown", reason: "Awaiting reading after reset",
+  });
 });
 
 test("prepaid balances remain visible without inventing a funded percentage", async (t) => {
@@ -162,9 +166,11 @@ test("the real reader keeps accounts separate without sending email, IDs or cred
   assert.doesNotMatch(output, /SECRET-(ID|EMAIL|TOKEN|HELP)/);
   const result = parseQuota(output, now);
   assert.deepEqual(result.rows.map((row) => [row.accountLabel, row.used, row.accountActive, row.stale]), [
-    ["Personal", 60, false, true], ["Work", 20, true, false], ["Pending", null, false, false],
+    ["Personal", 60, false, true], ["Work", 20, true, false], ["Pending", null, false, true],
   ]);
   assert.equal(result.rows[1].updatedAt, new Date(now - 60000).toISOString());
+  assert.equal(result.rows[2].updatedAt, "");
+  assert.equal(result.rows[2].freshUntil, null);
   assert.equal(result.errors, 0);
 });
 
@@ -514,6 +520,7 @@ test("a clean read with no records is no-data, not a host with quotas", async ()
 
 test("valid rows beside unreadable records stay ok, with the errors kept visible", async () => {
   const { collectFleet } = await fleetPromise;
+  const { availabilityOf } = await modelPromise;
   const cached = [{ id: "claude", used: 10, stale: false, windows: [] }];
   const previous = [{ name: "linux-a", label: "linux-a", status: "ok", rows: cached, errors: 0, lastSuccessAt: now - 1000 }];
   const fleet = await collectFleet({
@@ -528,4 +535,271 @@ test("valid rows beside unreadable records stay ok, with the errors kept visible
   assert.deepEqual(fleet.hosts[1].rows.map((row) => [row.id, row.used]), [["claude", 65]]);
   assert.equal(fleet.hosts[1].errors, 1);
   assert.equal(fleet.hosts[1].lastSuccessAt, now);
+  assert.equal(availabilityOf(fleet.hosts[1].rows[0], { hostStatus: fleet.hosts[1].status, now }).state, "available");
+});
+
+test("availability uses raw limits, not rounded display percentages, and requires every constraint", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  const cases = [
+    ["near-limit", [{ percent: 0.996 }], "available"],
+    ["zero-use", [{ percent: 0 }], "available"],
+    ["reached", [{ percent: 1 }], "exhausted"],
+    ["overage", [{ percent: 1.4 }], "exhausted"],
+    ["positive", [{ percent: 0.2 }, { percent: 0.6 }], "available"],
+    ["one-reached", [{ percent: 0.2 }, { percent: 1 }], "exhausted"],
+    ["missing", [{ percent: 0.2 }, { label: "Weekly" }], "unknown"],
+    ["null", [{ percent: 0.2 }, null], "unknown"],
+    ["string", [{ percent: 0.2 }, "invalid"], "unknown"],
+    ["array", [{ percent: 0.2 }, []], "unknown"],
+    ["negative", [{ percent: 1 }, { percent: -0.1 }], "unknown"],
+    ["invalid-number", [{ percent: 0.2 }, { percent: "0.1" }], "unknown"],
+    ["estimated", [{ percent: 0.2, estimated: true }], "unknown"],
+    ["bad-reset", [{ percent: 0.2, resetsAt: "not a date" }], "unknown"],
+    ["bad-reset-type", [{ percent: 0.2, resetsAt: 123 }], "unknown"],
+  ];
+  for (const [id, limits, state] of cases) {
+    const row = parseQuota(line(id, 0, { limits }), now).rows[0];
+    assert.equal(row.windows.length, limits.length, id);
+    assert.equal(row.stale, false, `${id}: missing capacity is not producer staleness`);
+    assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, state, id);
+    if (id === "near-limit") {
+      assert.equal(row.used, 100, "legacy display remains compatible");
+      assert.equal(row.windows[0].capacity, "available");
+      assert.ok(Math.abs(row.windows[0].remainingPercent - 0.4) < 1e-10);
+    }
+  }
+});
+
+test("balances retain raw amounts and cannot override other constraints", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  const cases = [
+    ["unfunded", { remaining: 5, currency: "USD" }, [], "available"],
+    ["sub-cent", { remaining: 0.001, funded: 20 }, [], "available"],
+    ["funding-mismatch", { remaining: 25, funded: 20 }, [], "available"],
+    ["empty", { remaining: 0 }, [], "exhausted"],
+    ["negative", { remaining: -1 }, [], "unknown"],
+    ["missing", {}, [{ percent: 0.1 }], "unknown"],
+    ["malformed", "five", [{ percent: 0.1 }], "unknown"],
+    ["estimated", { remaining: 5, estimated: true }, [], "unknown"],
+    ["mixed-positive", { remaining: 5 }, [{ percent: 0.1 }], "available"],
+    ["mixed-limit", { remaining: 5 }, [{ percent: 1 }], "exhausted"],
+    ["mixed-balance", { remaining: 0 }, [{ percent: 0.1 }], "exhausted"],
+    ["mixed-unknown", { remaining: 5 }, [{ percent: null }], "unknown"],
+    ["unknown-before-exhaustion", {}, [{ percent: 1 }], "unknown"],
+  ];
+  for (const [id, balance, limits, state] of cases) {
+    const row = parseQuota(line(id, 0, { limits, balance }), now).rows[0];
+    const window = row.windows.at(-1);
+    assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, state, id);
+    assert.equal(window.remaining, typeof balance.remaining === "number" && balance.remaining >= 0 ? balance.remaining : null, id);
+    assert.equal(window.currency, balance.currency || "", id);
+    assert.equal(window.estimated, balance.estimated === true, id);
+    if (id === "unfunded") assert.equal(window.used, null);
+    if (id === "sub-cent") assert.equal(window.capacity, "available");
+  }
+});
+
+test("freshness and readiness are evaluated independently of capacity and at render time", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  const row = parseQuota(line("claude", 0.2), now).rows[0];
+  assert.equal(row.freshUntil, Date.parse(recent) + 30 * 60 * 1000);
+  assert.equal(availabilityOf(row, { hostStatus: "ok", now: row.freshUntil }).state, "available");
+  assert.deepEqual(availabilityOf(row, { hostStatus: "ok", now: row.freshUntil + 1 }), {
+    state: "unknown", reason: "Saved quota reading is stale",
+  });
+  for (const hostStatus of ["offline", "error", "no-data", undefined]) {
+    assert.equal(availabilityOf(row, { hostStatus, now }).state, "unknown", String(hostStatus));
+  }
+  for (const extra of [
+    { ready: false }, { limitsStale: true }, { updatedAt: "" }, { updatedAt: "invalid" },
+    { updatedAt: new Date(now - 31 * 60 * 1000).toISOString() },
+    { updatedAt: new Date(now + 6 * 60 * 1000).toISOString() }, { limitsTruncated: true },
+  ]) {
+    const invalid = parseQuota(line("claude", 1, extra), now).rows[0];
+    assert.equal(availabilityOf(invalid, { hostStatus: "ok", now }).state, "unknown", JSON.stringify(extra));
+  }
+  const notReady = parseQuota(line("claude", 0.2, { ready: false }), now).rows[0];
+  assert.equal(availabilityOf(notReady, { hostStatus: "ok", now }).reason, "Provider is not ready");
+  const resetting = parseQuota(line("claude", 0.2, {
+    limits: [{ percent: 0.2, resetsAt: new Date(now + 1000).toISOString() }],
+  }), now).rows[0];
+  const before = JSON.stringify(resetting);
+  assert.equal(availabilityOf(resetting, { hostStatus: "ok", now }).state, "available");
+  assert.equal(availabilityOf(resetting, { hostStatus: "ok", now: now + 1000 }).reason, "Awaiting reading after reset");
+  assert.equal(JSON.stringify(resetting), before, "classification does not mutate the snapshot");
+  assert.equal(availabilityOf(row, { hostStatus: "ok", now: Date.parse(recent) - 6 * 60 * 1000 }).state, "unknown", "clock rollback cannot make future data current");
+  for (const invalidNow of [NaN, Infinity, -Infinity]) {
+    assert.equal(availabilityOf(row, { hostStatus: "ok", now: invalidNow }).state, "unknown");
+  }
+});
+
+test("provider fetch timestamps take precedence and invalid supplied timestamps never fall back", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  for (const fetchedAt of [null, 0, -1, "invalid", recent, 1e20, now - 31 * 60 * 1000]) {
+    const row = parseQuota(line("copilot", 0.2, { updatedAt: new Date(now).toISOString(), limitsFetchedAt: fetchedAt }), now).rows[0];
+    assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, "unknown", String(fetchedAt));
+  }
+  const fresh = parseQuota(line("copilot", 0.2, { updatedAt: "2000-01-01T00:00:00Z", limitsFetchedAt: now - 1000 }), now).rows[0];
+  assert.equal(fresh.updatedAt, new Date(now - 1000).toISOString());
+  assert.equal(availabilityOf(fresh, { hostStatus: "ok", now }).state, "available");
+  const legacy = parseQuota(line("claude", 0.2), now).rows[0];
+  assert.equal(availabilityOf(legacy, { hostStatus: "ok", now }).state, "available");
+  const accounts = parseQuota(line("claude", 0.2, {
+    limitsFetchedAt: now, accounts: [
+      { label: "Fresh", fetchedAt: now, limits: [{ percent: 0.2 }] },
+      { label: "Missing time", limits: [{ percent: 0.2 }] },
+      { label: "Invalid time", fetchedAt: "invalid", limits: [{ percent: 0.2 }] },
+      { label: "No quota", fetchedAt: now, limits: [] },
+    ],
+  }), now).rows;
+  assert.deepEqual(accounts.map((row) => availabilityOf(row, { hostStatus: "ok", now }).state), ["available", "unknown", "unknown", "unknown"]);
+  assert.equal(accounts[1].updatedAt, "");
+  assert.equal(accounts[2].updatedAt, "");
+});
+
+test("account truncation does not negate known accounts, but omitted constraints do", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  const accounts = Array.from({ length: 17 }, (_, index) => ({
+    label: `Account ${index + 1}`, fetchedAt: now, active: index === 0, limits: [{ percent: index === 1 ? 1 : 0.2 }],
+  }));
+  accounts[2].limits = Array.from({ length: 21 }, () => ({ percent: 0.2 }));
+  const result = parseQuota(line("claude", 0.99, { accounts }), now);
+  assert.equal(result.truncated, 1);
+  assert.equal(result.truncatedWindows, 1);
+  const byLabel = Object.fromEntries(result.rows.map((row) => [row.accountLabel, row]));
+  assert.equal(availabilityOf(byLabel["Account 1"], { hostStatus: "ok", now }).state, "available");
+  assert.equal(availabilityOf(byLabel["Account 2"], { hostStatus: "ok", now }).state, "exhausted");
+  assert.equal(availabilityOf(byLabel["Account 3"], { hostStatus: "ok", now }).state, "unknown");
+  assert.equal(availabilityOf(byLabel["Account 4"], { hostStatus: "ok", now }).state, "available", "inactive is not the same as no capacity");
+});
+
+test("non-finite constraints never imply remaining capacity", async () => {
+  const { parseQuota, availabilityOf } = await modelPromise;
+  for (const fields of [
+    '"limits":[{"percent":1e400}]', '"limits":[{"percent":-1e400}]',
+    '"balance":{"remaining":1e400}', '"balance":{"remaining":-1e400}',
+    '"limits":[{"percent":0.2}],"limitsFetchedAt":1e400',
+  ]) {
+    const row = parseQuota(`{"id":"claude","updatedAt":"${recent}",${fields}}`, now).rows[0];
+    assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, "unknown", fields);
+  }
+  const malformed = parseQuota(`{"id":"claude","updatedAt":"${recent}","limits":[{"percent":NaN}]}`, now);
+  assert.equal(malformed.rows.length, 0);
+  assert.equal(malformed.errors, 1);
+});
+
+test("the reader selects native settings first without mixing fork settings", async (t) => {
+  const { READ_SCRIPT, parseQuota, availabilityOf } = await modelPromise;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-fleet-settings-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const usage = path.join(temp, "omarchy/agents/usage");
+  const config = path.join(temp, "config/omarchy");
+  fs.mkdirSync(usage, { recursive: true });
+  fs.mkdirSync(config, { recursive: true });
+  for (const id of ["claude", "codex"]) fs.writeFileSync(path.join(usage, `${id}.json`), line(id, 0.2, {
+    updatedAt: new Date(now - 45 * 60 * 1000).toISOString(),
+  }));
+  const native = { id: "omarchy.agents", refreshIntervalSec: 3600, providers: { codex: { enabled: false } } };
+  const fork = { id: "mateod.agents", refreshIntervalSec: 30, providers: { claude: { enabled: false } } };
+  for (const [widgets, ids, state] of [
+    [[native], ["claude"], "available"],
+    [[fork], ["codex"], "unknown"],
+    [[fork, native], ["claude"], "available"],
+    [[native, fork], ["claude"], "available"],
+    [[fork, { id: "omarchy.agents" }], ["claude", "codex"], "unknown"],
+  ]) {
+    fs.writeFileSync(path.join(config, "shell.json"), JSON.stringify({ bar: { layout: { right: widgets } } }));
+    const output = execFileSync("sh", ["-c", READ_SCRIPT], {
+      env: { ...process.env, XDG_STATE_HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config") }, encoding: "utf8",
+    });
+    const rows = parseQuota(output, now).rows;
+    assert.deepEqual(rows.map((row) => row.id), ids);
+    for (const row of rows) assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, state);
+  }
+});
+
+test("native Claude and Copilot schema fixtures preserve fetch evidence and exclude local estimates", async (t) => {
+  const { READ_SCRIPT, parseQuota, availabilityOf } = await modelPromise;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-fleet-native-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const usage = path.join(temp, "omarchy/agents/usage");
+  fs.mkdirSync(usage, { recursive: true });
+  // Shapes from native base_record/account_entry and the two allowance collectors; values are synthetic.
+  const records = [
+    { schemaVersion: 1, id: "claude", ready: true, limitsStale: false, limitsFetchedAt: now - 1000,
+      limits: [{ label: "Session", percent: 0.2 }], accounts: [
+        { id: "SENTINEL-ID", email: "SENTINEL-EMAIL", label: "Work", primary: true, active: true,
+          fetchedAt: now - 1000, stale: false, limits: [{ label: "Session", percent: 0.2 }, { label: "Weekly", percent: 0.5 }] },
+        { label: "Personal", active: false, fetchedAt: now - 2000, stale: false, limits: [{ percent: 1 }] },
+      ] },
+    { schemaVersion: 1, id: "copilot", ready: true, limitsStale: false, limitsFetchedAt: now - 1000,
+      limits: [{ label: "Monthly allowance", percent: 0.996, resetsAt: "2026-12-01T00:00:00Z" }] },
+    { id: "copilot-local", ready: true, limitsStale: false, limitsFetchedAt: 0,
+      limits: [{ label: "Monthly allowance (est.)", percent: 0.2, resetsAt: "2026-12-01T00:00:00Z" }] },
+    { id: "explicit-estimate", ready: true, limitsFetchedAt: now - 1000,
+      limits: [{ label: "Monthly allowance", percent: 0.2, estimated: true }] },
+    { id: "not-ready", ready: false, limitsFetchedAt: now, limits: [{ percent: 0.2 }] },
+    { id: "bad-timestamp", ready: true, limitsFetchedAt: "invalid", limits: [{ percent: 0.2 }] },
+    { id: "empty", ready: false, limitsFetchedAt: 0, limits: [] },
+  ];
+  for (const record of records) fs.writeFileSync(path.join(usage, `${record.id}.json`), JSON.stringify({
+    ...record, updatedAt: new Date(now).toISOString(), token: "SENTINEL-TOKEN", authHelpText: "SENTINEL-HELP",
+  }));
+  const output = execFileSync("sh", ["-c", READ_SCRIPT], {
+    env: { ...process.env, XDG_STATE_HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config") }, encoding: "utf8",
+  });
+  assert.doesNotMatch(output, /SENTINEL/);
+  const rows = parseQuota(output, now).rows;
+  const state = (id, label = "") => availabilityOf(rows.find((row) => row.id === id && row.accountLabel === label), { hostStatus: "ok", now }).state;
+  assert.equal(state("claude", "Work"), "available");
+  assert.equal(state("claude", "Personal"), "exhausted");
+  assert.equal(state("copilot"), "available");
+  for (const id of ["copilot-local", "explicit-estimate", "not-ready", "bad-timestamp"]) assert.equal(state(id), "unknown", id);
+  assert.equal(rows.some((row) => row.id === "empty"), false);
+});
+
+test("the real reader preserves malformed constraints beside valid ones", async (t) => {
+  const { READ_SCRIPT, parseQuota, availabilityOf } = await modelPromise;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-fleet-unknown-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const usage = path.join(temp, "omarchy/agents/usage");
+  fs.mkdirSync(usage, { recursive: true });
+  const records = [
+    { id: "null-limit", limits: [{ percent: 0.2 }, null] },
+    { id: "missing-percent", limits: [{ percent: 0.2 }, { label: "Weekly" }] },
+    { id: "bad-container", limits: {}, balance: { remaining: 5 } },
+    { id: "bad-balance", limits: [{ percent: 0.2 }], balance: "invalid" },
+    { id: "missing-amount", limits: [{ percent: 0.2 }], balance: {} },
+    { id: "bad-reset", limits: [{ percent: 0.2, resetsAt: 123 }] },
+  ];
+  for (const record of records) fs.writeFileSync(path.join(usage, `${record.id}.json`), JSON.stringify({ ...record, updatedAt: recent }));
+  const output = execFileSync("sh", ["-c", READ_SCRIPT], {
+    env: { ...process.env, XDG_STATE_HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config") }, encoding: "utf8",
+  });
+  const rows = parseQuota(output, now).rows;
+  assert.equal(rows.length, records.length);
+  for (const row of rows) assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, "unknown", row.id);
+});
+
+test("cached capacity never qualifies after a failed read and reset invalidation preserves the old snapshot", async () => {
+  const { collectFleet } = await fleetPromise;
+  const { availabilityOf } = await modelPromise;
+  const initial = await collectFleet({
+    listMachines: async () => [{ name: "linux-a", state: "connected" }],
+    readHost: async () => ok(line("claude", 0.2, { limits: [{ percent: 0.2, resetsAt: new Date(now + 1000).toISOString() }] })),
+    now,
+  });
+  const cached = JSON.stringify(initial);
+  const failed = await collectFleet({
+    listMachines: async () => [{ name: "linux-a", state: "connected" }],
+    readHost: async () => { throw new Error("unreachable"); },
+    previous: initial.hosts, now: now + 1000,
+  });
+  for (const host of failed.hosts) {
+    const row = host.rows[0];
+    assert.equal(row.windows[0].capacity, "unknown");
+    assert.equal(row.windows[0].remainingPercent, null);
+    assert.equal(availabilityOf(row, { hostStatus: host.status, now: now + 1000 }).state, "unknown");
+  }
+  assert.equal(JSON.stringify(initial), cached);
 });

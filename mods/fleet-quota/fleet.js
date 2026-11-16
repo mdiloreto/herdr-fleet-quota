@@ -41,7 +41,9 @@ function carry(plan, previousHost, status, reason = "", now = Date.now()) {
   const rows = Array.isArray(previousHost?.rows) ? previousHost.rows.map((row) => {
     const windows = Array.isArray(row.windows) ? row.windows.map((window) => {
       const reset = Date.parse(window.resetsAt);
-      return !window.isBalance && Number.isFinite(reset) && reset <= now ? { ...window, used: null } : window;
+      return !window.isBalance && Number.isFinite(reset) && reset <= now
+        ? { ...window, used: null, capacity: "unknown", remainingPercent: null, reason: "Awaiting reading after reset" }
+        : window;
     }) : [];
     const current = windows.filter((window) => typeof window.used === "number" && Number.isFinite(window.used)).map((window) => window.used);
     return { ...row, windows, stale: true, used: row.incomplete ? null : windows.length ? (current.length ? Math.max(...current) : null) : row.used };
