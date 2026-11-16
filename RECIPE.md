@@ -1,70 +1,68 @@
 # Fleet quota
 
-A Herdr mod that shows the AI quota each machine in your fleet has already recorded, side by side: a compact badge in a bar and a dialog with one section per machine, one row per provider or account, and one track per quota window.
+A Herdr mod that shows which AI providers still have capacity across every machine in your fleet: a compact badge of provider icons for a bar, and a dialog with the remaining capacity per machine, provider and account.
 
 > A sanitized preview image will be supplied before any public publication. This recipe deliberately does not link to a `preview.png` that does not exist yet.
 
 ## What you see
 
-The panel uses colored icon tiles and a left accent on each provider card: theme amber for Claude, cyan for Codex, violet for Copilot, blue for OpenRouter and pink for Antigravity. Unknown providers use the theme accent and their original id. A separate overview shows the highest reported percentage and machine coverage; neither is a sum of quotas.
-
-Quota fills retain their provider color below 80%, use the theme warning color from 80%, and the blocked color from 95%. Old readings retain color at reduced opacity, with an explicit `old` badge; current readings have a `current` badge. Missing percentages have no fill and an explicit unknown label. These are presentation thresholds, not provider-enforced limits.
-
-**The badge**, 118 px wide and as tall as its bar: a compact indicator plus the fleet's highest reported quota percentage. The indicator distinguishes complete coverage from incomplete coverage, and the number carries `~` when the highest reading itself is old or from an offline host and `!` when any machine, percentage or record is missing. The whole badge is a button: clicking it opens the dialog, and its tooltip and accessibility label name the host, provider and account behind the number and how many machines were read.
+**The badge**, 118 px wide and as tall as its bar: the icons of the providers that currently report remaining capacity, up to three; with more, two icons and a `+N` count. It shows provider icons only — no percentage and no warning marks. Hovering names the providers (tooltip and accessibility label). With nothing to show it says so honestly: a *Checking* state while the first read runs and an *Unverified* state when no capacity could be confirmed; neither implies zero or exhausted. The whole badge is a button that opens the dialog. Exact label wording is set in `main.js`.
 
 **The dialog**, 620×560, centered, top to bottom:
 
-1. **Header:** the mod title beside a coverage summary — how many machines have a reading, with an in-flight note while a read is running — and, at the right, a reread control and a close control.
-2. **Notice strip**, only after a failed machine listing or a failed refresh: the failure in the theme's blocked color on a bordered strip. What was read before stays below.
-3. **Scrolling host list:** one card per machine, this computer first and the rest sorted by name. Each card has the machine's icon and name, its status word, and notes when records were unreadable or omitted, when the rows shown are an earlier reading, and when it was last read.
-4. **Provider rows** inside each card: the provider icon and provider id, the account label and active marker when the reading is split per account, an old marker for stale rows, an incomplete marker when windows were omitted, and the record time.
-5. **Quota windows** under each provider: the window label, `N% used` or `? used`, its reset time (or that the reset has passed), and a horizontal progress track whose fill follows the percentage. A prepaid balance shows its remaining amount as the label, with `no percentage` when no funded amount was recorded. Unknown windows say `? used`; they never read as 0%.
-6. **Footer:** one line stating that each line is one machine's own reading and that nothing here is added up.
+1. **Header:** the mod title and a short summary of how many machines were read, with an in-flight note while a read runs; at the right, a reread control and a close control.
+2. **Notice strip**, only after a failed machine listing or a failed refresh: the failure in the theme's blocked color. What was read before stays below.
+3. **Scrolling host list:** one card per machine, this computer first and the rest sorted by name. Each card has the machine's icon and name and its status.
+4. **Provider and account rows** inside each card: the provider icon and name, the account label and active marker when the reading is split per account, and the exact age of its reading.
+5. **Quota windows and balances** under each provider: the remaining capacity of each window with a progress track, and its exact reset time; a prepaid balance is shown as an amount. Unknown values say so and never read as 0.
+6. **Availability reasons:** a host or account without a usable reading says why (for example offline, no collector data, stale or incomplete record).
+7. **Footer:** one line stating that each line is one machine's own reading and nothing is added up.
 
-Type, spacing and colors come from the active Herdr theme; the mod sets no fixed palette. Only the host list scrolls: header and footer stay put.
+There is no fleet-wide "highest used" or "incomplete" headline. Type, spacing and colors come from the active Herdr theme and provider tiles use per-provider accents; the mod ships no fixed palette beyond those. Only the host list scrolls.
 
 ## How it behaves
 
-- **Refresh:** every 60 seconds, plus the dialog's reread control. One refresh at a time — a slow fleet cannot stack timers. Each refresh lists machines, reads this computer and every connected machine, up to 4 reads at once, each `exec` bounded to 8 seconds.
-- **`read`:** the host answered and at least one row parsed. It does not mean fresh percentages: rows can still be marked old, and windows become unknown when their reset time passes. `lastSuccessAt` updates.
-- **`no data`:** the host is connected and reachable but the collector directory is absent (exit 4), or the read parsed no records. Old rows are dropped: there is nothing to carry. Normal for a machine without the collector.
-- **`offline`:** a machine Herdr lists as not connected is not read. Its previous rows stay visible, marked old; windows whose reset time has passed become unknown.
-- **`error`:** the read failed (no `jq`, unreadable `shell.json`, no output, unparseable records, unreachable while listed connected). Previous rows stay, marked old; the card shows the reason. One failing machine never hides or stops the others.
-- **Partial data:** valid rows beside unreadable files keep the host `read`, and `N unreadable or omitted` counts them. More than 16 accounts per provider or 20 windows per account is reported as omitted, not silently dropped.
-- **Clicks:** the whole badge is a button and opens the dialog (the press does not start a window drag); the reread control rereads; the close control and Esc close. No keys are bound: the mod ships no `keys.json`. Nothing else is clickable.
+- **Refresh:** every 60 seconds, plus the dialog's reread control. One refresh at a time. Each refresh lists machines (`hc machine ls --json`), reads this computer and every connected machine, up to 4 reads at once, each `exec` bounded to 8 seconds.
+- **Capacity:** only a current reading counts as remaining capacity. A stale, expired or incomplete reading is not counted for the badge and is labeled in the dialog.
+- **Host states:** `read` means the host answered and at least one row parsed (rows can still be old); `no data` means no collector data or no records; `offline` means Herdr lists the machine as not connected, so it is not read and its previous rows stay visible as old; `error` means the read failed and previous rows stay as old with the reason. One failing machine never hides or stops the others.
+- **Partial data:** valid rows beside unreadable files keep the host `read` and the dialog counts what was skipped. More than 16 accounts per provider or 20 windows per account is reported as omitted, not dropped silently.
+- **Clicks:** the badge opens the dialog (the press does not start a window drag); the reread control rereads; the close control and Esc close. No keys are bound and the mod ships no `keys.json`.
 
 ## Built from
 
-- **Layout:** one `block` node with `content: { "mod": "fleet-quota", "props": { "part": "bar" } }` and `size: { "px": 118 }` (see `examples/bar-block.json`; it is a fragment for a row, not a layout). The dialog is an overlay the mod opens itself, not a layout node.
-- **`mod.json`:** `place: "none"` prevents automatic docking; `overlay: { "width": 620, "height": 560 }` also sizes the detail when opened through `mod.open`.
-- **`main.js`:** a gpui-kit `View`. Renders the badge when `props().part === "bar"`, otherwise the dialog panel. `openOverlay({ mod: "fleet-quota", kind: "dialog", width: 620, height: 560, props: { part: "panel" } })`. Uses `checking()` to skip all reads during `herdr-app check`, `cx.timer.every(60000, …)`, `cx.spawn`, `cx.notify`, `theme()`, `props()`, `closeOverlay`.
-- **`fleet.js`:** `collectFleet({ listMachines, readHost, previous, now, concurrency })`. Local machine first, then `hc machine ls --json` names sorted; skips duplicates, invalid names and non-connected machines; bounded worker pool (max 4); carries previous rows on offline/error; `no-data` on exit 4.
-- **`model.js`:** `READ_SCRIPT` (POSIX `sh` + `jq`) and `parseQuota(output, now)`. The script reads `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), at most 64 `*.json` files of at most 256 KiB each, and the optional `$XDG_CONFIG_HOME/omarchy/shell.json` for disabled providers and `refreshIntervalSec`. It refuses symlinks, oversized or invalid files, and emits only bounded quota fields.
+- **Layout:** one `block` node with `content: { "mod": "fleet-quota", "props": { "part": "bar" } }` and `size: { "px": 118 }` (see `examples/bar-block.json`; a fragment for a row of a personal layout, not a layout). The dialog is an overlay the mod opens itself.
+- **`mod.json`:** `place: "none"` prevents automatic docking; `overlay: { "width": 620, "height": 560 }` sizes the dialog when opened with `herdr-app do mod.open --name fleet-quota`.
+- **`main.js`:** a gpui-kit `View`. Renders the badge when `props().part === "bar"`, otherwise the dialog panel, which is also what `herdr-app check` renders. `openOverlay({ mod: "fleet-quota", kind: "dialog", width: 620, height: 560, props: { part: "panel" } })`. Uses `checking()` to skip all reads during a check, `cx.timer.every(60000, …)`, `cx.spawn`, `cx.notify`, `theme()`, `props()`, `closeOverlay`.
+- **`fleet.js`:** `collectFleet({ listMachines, readHost, previous, now, concurrency })`: this computer first, then machine names sorted; skips duplicates, invalid names and machines that are not connected; bounded worker pool of 4; carries previous rows on offline or error.
+- **`model.js`:** `READ_SCRIPT` (POSIX `sh` + `jq`) and the record parsing. On each host the script reads `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), at most 64 `*.json` files of at most 256 KiB each, and the Omarchy widget settings: the stock `omarchy.agents` entry when present, otherwise the older `mateod.agents` entry, for the refresh interval and disabled providers. It refuses symlinks and oversized or invalid files and emits only bounded quota fields.
 - **Herdr functions:** `exec("sh", ["-c", READ_SCRIPT], { on: machineName, timeout: 8000 })`, `hc(["machine", "ls", "--json"])`, `openOverlay`, `closeOverlay`, `props`, `theme`, `checking`.
-- **Icons:** provider icons already shipped with Herdr for claude, codex, copilot, antigravity and gemini, plus a small set of original glyphs in `mods/fleet-quota/icons/`, drawn with `svg(…)`. No other images, no fonts, no sounds.
-- **Network:** no provider API and no new listener. The reads travel over Herdr's existing machine transport (`hc machine ls`, `exec(…, { on })`), which does use the network between Herdr and the listed hosts; nothing contacts a provider endpoint.
+- **Art:** provider icons already shipped with Herdr plus eight original SVGs in `mods/fleet-quota/icons/` (`chevron-right`, `clock`, `close`, `desktop`, `gauge`, `provider`, `refresh`, `server`), drawn with `svg(…)`. No other images, fonts or sounds.
+- **Installer:** `scripts/install.sh`, POSIX `sh`, report-only unless `--install`. Copies exactly `main.js`, `model.js`, `fleet.js`, `mod.json` and those eight icons into `<herdr app home>/mods/fleet-quota` after `herdr-app check` passes on a temporary copy. It is not part of the mod and never runs inside Herdr.
+- **Network:** no provider API and no new listener. Reads travel over Herdr's existing machine transport; nothing contacts a provider.
 
-Reading semantics in one place: record percentages are fractions (`0.42` → `42% used`), clamped at 100 because overage is real; a window whose reset time has passed is unknown (`?`); a row is old when the producer says stale, its timestamp is older than the larger of 30 minutes and twice the collector interval, or it is more than 5 minutes in the future; a balance gets a percentage only when `funded` is present and the remaining amount does not exceed it.
+Reading semantics: record percentages are fractions of use clamped at 100 because overage is real; a window whose reset time has passed is unknown; a row is old when the producer says stale, its timestamp is older than the larger of 30 minutes and twice the collector interval, or it is more than 5 minutes in the future; a balance gets a percentage only when its funded amount is recorded and the remaining amount does not exceed it.
 
 ## Watch out
 
-- **Clone shipped layouts before editing.** Add the bar block to an existing personal layout or a copy made with `layout.clone`; Herdr restores shipped originals on restart.
-
-- **The collector is an assumption, not a dependency to install.** No Omarchy quota records on a host means `no data`, which is a correct outcome. Do not add providers, credentials or collector files to make a host light up.
-- **Unix hosts only.** The reader needs `sh` and `jq`; a Windows host cannot answer it and reads as `error`.
-- **`herdr-app check` is not a live test.** It renders once with `checking()` true and no `props`, so it proves the default panel renders — not the bar, and not a live read. A live window with the bar block is needed for the badge; `herdr-app status` and a real window are needed for the rest.
+- **Clone shipped layouts before editing.** Add the bar block to an existing personal layout or to a copy made with `layout.clone`; Herdr restores shipped originals on restart. The installer never edits layouts, keys or settings.
+- **The collector is an assumption, not something this mod installs.** Each measured host needs the Omarchy agents collector running and the user logged in to each provider; no records means "unavailable", which is a correct outcome. Never add providers, credentials or collector files to make a host light up, and an installed provider CLI does not prove capacity. Verified so far only against Omarchy 4.5.0-3 source and synthetic fixtures.
+- **A viewer needs no local records.** A machine that only looks at remote hosts needs the Herdr app and `herdr-app`, not a local Omarchy or `jq`.
+- **Unix hosts only.** The reader needs `sh` and `jq`; a Windows host reads as an error.
+- **`herdr-app check` is not a live test.** It renders once with `checking()` true and no `props`: it proves the default panel renders, not the badge and not a live read. Use a real window with the bar block for the badge and `herdr-app status` for errors.
+- **Staged check vs final location.** The installer checks a temporary copy; icons resolve from `mods/fleet-quota/icons/` only after the copy, so run `herdr-app status` after installing.
 - **Caps are deliberate:** 64 record files, 256 KiB per file, 20 windows per account, 16 accounts per provider, 4 concurrent hosts, 8 s per read. Raising them without changing the notices would hide data silently.
-- **118 px is load-bearing.** The badge is built for that width; a narrower block truncates its number and coverage mark. The dialog is fixed at 620×560 and scrolls the host list.
-- **Nothing is summed.** The same provider on two machines stays two rows, and two accounts stay separate, because the mod cannot verify whether logins share one quota.
-- **Unknown is not zero.** `? used` and `no percentage` both mean "not known", never "0% used".
-- **Renaming the folder** requires updating `content.mod` in the layout, the `mod` name in `main.js`'s `openOverlay` call, and the `mods/fleet-quota/…` asset paths (including `icons/`); `mod.json` places nothing by default.
-- **Overlay width/height** in `main.js` and `mod.json` must match: the badge uses `openOverlay`, while `herdr-app do mod.open --name fleet-quota` uses the manifest.
+- **118 px is load-bearing.** The badge is built for that width. The dialog is 620×560 and scrolls the host list.
+- **Nothing is summed.** The same provider on two machines stays two rows; accounts and balances are never added, because the mod cannot verify whether logins share one quota.
+- **Unknown is not zero.**
+- **Renaming the folder** requires updating `content.mod` in the layout, the `mod` name in `main.js`'s `openOverlay` call, the `mods/fleet-quota/…` asset paths (including `icons/`) and the installer's destination.
+- **Overlay width/height** in `main.js` and `mod.json` must match: the badge uses `openOverlay`, while `mod.open` uses the manifest.
+- **No updater or rollback.** Upgrades are a manual review of one folder; the installer refuses to overwrite a different install.
 
 ## Done when
 
-- `npm test` passes: fixture checks of the record reader, host collection and the UI, with no provider calls and no real quota files.
-- `npm run check` parses every `mods/fleet-quota/*.js` file without a syntax error.
-- `herdr-app check ~/.config/herdr-app/mods/fleet-quota` exits 0 for the default panel render.
-- `herdr-app status` shows no error for this mod, and `herdr-app shot` shows the 118 px badge in its bar.
-- Clicking the badge opens a 620×560 dialog with the header, a card per machine, provider rows, quota tracks and the footer; the reread control rereads and the close control or Esc closes.
-- On a connected host with the collector, real percentages appear; on a disconnected one, its card says `offline`, keeps its last rows and sets `!` (and `~` only when that host's old reading is the highest shown); on a host without the collector, its card says `no data`; any such gap also sets `!`.
+- `npm test` passes: fixture checks of the record reader, host collection, the UI and the installer, with no provider calls, no real quota files and no real Herdr app.
+- `npm run check` parses every `mods/fleet-quota/*.js` file and syntax-checks `scripts/install.sh`.
+- `sh scripts/install.sh` changes nothing and reports paths, prerequisites and actions; `--install` on a fresh Herdr home creates exactly the 12 mod files, a second run is a no-op, and a changed or symlinked install is refused untouched.
+- `herdr-app check` of the installed folder exits 0, and `herdr-app status` shows no error for this mod.
+- `herdr-app do mod.open --name fleet-quota` opens the 620×560 dialog with the header, a card per machine, provider rows with remaining capacity, ages and reset times, availability reasons and the footer; the reread control rereads and the close control or Esc closes.
+- With the bar block in a personal layout, the 118 px badge shows icons only for providers with current remaining capacity (two icons and `+N` beyond three), shows *Checking* then *Unverified* when nothing can be confirmed, and carries no percentage or warning marks.
