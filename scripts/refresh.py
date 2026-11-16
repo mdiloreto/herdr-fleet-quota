@@ -16,6 +16,48 @@ from typing import Any
 
 MAX_BYTES = 256 * 1024
 TIMEOUT = 45
+NATIVE_STATUS_MESSAGES = {
+    "Limits paused": "native status: Limits paused",
+    "Sign-in expired": "native status: Sign-in expired",
+    "Waiting for auth": "native status: Waiting for auth",
+    "Claude limits unavailable": "native status: Claude limits unavailable",
+}
+
+# Private Omarchy interface: preserve native quota/auth/cache handling, but
+# bypass the transcript scan that even --limits-only performs on a cold cache.
+CLAUDE_QUOTA_BOOTSTRAP = """
+import inspect
+import runpy
+import sys
+
+try:
+    native = runpy.run_path(sys.argv[1], run_name='herdr_quota_adapter')
+    main = native.get('main')
+    if not inspect.isfunction(main):
+        raise ValueError('unsupported main')
+    scope = main.__globals__
+    local_stats, emit = scope.get('local_stats'), scope.get('emit')
+    if (scope.get('AGENT_ID') != 'claude' or not callable(local_stats)
+            or not callable(emit) or not {'local_stats', 'emit'} <= set(main.__code__.co_names)):
+        raise ValueError('unsupported collector')
+    inspect.signature(main).bind()
+    inspect.signature(local_stats).bind(None, 0, use_index=True)
+    inspect.signature(emit).bind({}, sort_keys=True)
+except Exception:
+    raise SystemExit(78) from None
+
+def no_history(claude_dir, max_age, use_index=True):
+    return {}
+
+def quota_emit(record, **kwargs):
+    record['hasLocalStats'] = False
+    return emit(record, **kwargs)
+
+scope['local_stats'] = no_history
+scope['emit'] = quota_emit
+sys.argv = [sys.argv[1], '--limits-only']
+raise SystemExit(main())
+"""
 
 
 def log(provider: str, message: str) -> None:
@@ -173,14 +215,19 @@ def merge(new: dict[str, Any], old: dict[str, Any], started_ms: int,
 
 
 def collect(executable: Path, environment: dict[str, str], provider: str) -> dict[str, Any]:
+    command = ([sys.executable, "-B", "-c", CLAUDE_QUOTA_BOOTSTRAP, str(executable)]
+               if provider == "claude" else [str(executable), "--limits-only"])
     with tempfile.TemporaryFile() as output:
-        process = subprocess.Popen([str(executable), "--limits-only"], env=environment,
+        process = subprocess.Popen(command, env=environment,
                                    stdin=subprocess.DEVNULL, stdout=output,
                                    stderr=subprocess.DEVNULL, start_new_session=True)
         try:
             code = process.wait(timeout=TIMEOUT)
             if code:
-                log(provider, f"collector failed (exit {code})")
+                if provider == "claude" and code == 78:
+                    log(provider, "quota-only adapter unavailable or incompatible; no CLI fallback (exit 78)")
+                else:
+                    log(provider, f"collector failed (exit {code})")
                 raise ValueError("collector failure")
             output.seek(0)
             record = decode(output.read(MAX_BYTES + 1))
@@ -233,6 +280,9 @@ def refresh(provider: str, usage: Path, control: Path, environment: dict[str, st
             new = collect(Path(environment["OMARCHY_PATH"]) / "bin" /
                           f"omarchy-agent-usage-{provider}", environment, provider)
             observed_ms = time.time_ns() // 1_000_000
+            native_status = new.get("usageStatusText")
+            if isinstance(native_status, str) and native_status in NATIVE_STATUS_MESSAGES:
+                log(provider, NATIVE_STATUS_MESSAGES[native_status])
             record, success = merge(new, old, started_ms, observed_ms)
         except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired):
             log(provider, "collector unavailable, timed out, or invalid; retaining prior quota")

@@ -24,6 +24,38 @@ function fixture(t) {
 }
 function collector(x, id, body) {
   const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
+  if (id === 'claude') {
+    fs.writeFileSync(file, `#!/usr/bin/env python3
+import json,os,subprocess,sys
+from pathlib import Path
+AGENT_ID='claude'
+def local_stats(claude_dir,max_age,use_index=True):
+    (Path(os.environ['HOME'])/'history-touched').write_text('must not scan')
+    raise RuntimeError('history scan must be bypassed')
+def emit(record,sort_keys=False):
+    print(json.dumps(record,sort_keys=sort_keys))
+def main():
+    stats=local_stats(Path(os.environ['HOME']),900,use_index=True)
+    assert stats == {}
+    with (Path(os.environ['HOME'])/'calls').open('a') as calls:
+        calls.write('claude '+' '.join(sys.argv[1:])+'\\n')
+    result=subprocess.run(['/bin/sh','-c',${JSON.stringify(body)}],stdout=subprocess.PIPE)
+    if result.returncode:
+        return result.returncode
+    try:
+        record=json.loads(result.stdout)
+    except (ValueError,UnicodeError):
+        sys.stdout.buffer.write(result.stdout)
+        return 0
+    record['hasLocalStats']=True
+    emit(record,sort_keys=True)
+    return 0
+if __name__ == '__main__':
+    (Path(os.environ['HOME'])/'cli-fallback').write_text('must not execute CLI')
+    raise SystemExit(main())
+`, { mode: 0o755 });
+    return;
+  }
   fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${id} $*" >> "$HOME/calls"\n${body}\n`, { mode: 0o755 });
 }
 const record = (id, fields = {}) => ({ id, updatedAt: new Date().toISOString(),
@@ -64,8 +96,66 @@ test('clean host refreshes both direct collectors, exporting chosen root, privat
   assert.equal(run(x).status, 0);
   assert.equal(calls(x), 'claude --limits-only\ncopilot --limits-only\n');
   assert.equal(saved(x, 'claude').limitsStale, false);
+  assert.equal(saved(x, 'claude').hasLocalStats, false);
+  assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+  assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+  assert.equal(fs.existsSync(path.join(x.omarchy, 'bin', '__pycache__')), false);
   assert.equal(fs.statSync(path.join(x.usage, 'claude.json')).mode & 0o777, 0o600);
   assert.deepEqual(fs.readdirSync(x.usage).sort(), ['claude.json', 'copilot.json']);
+});
+
+test('unsupported Claude private interface fails closed without scanning or CLI fallback', (t) => {
+  const mutations = [
+    source => source.replace("AGENT_ID='claude'", "AGENT_ID='other'"),
+    source => source.replace('def main():', 'def main(required):'),
+    source => source.replace('def local_stats(claude_dir,max_age,use_index=True):', 'def local_stats():'),
+    source => source.replace('def emit(record,sort_keys=False):', 'def emit(record):'),
+    source => source + '\nlocal_stats = None\n',
+    source => source + '\nmain = None\n',
+    source => source + '\nemit = None\n',
+  ];
+  for (const mutate of mutations) {
+    const x = fixture(t), old = record('claude');
+    prior(x, 'claude', old);
+    collector(x, 'claude', live(record('claude')));
+    collector(x, 'copilot', live(record('copilot')));
+    const file = path.join(x.omarchy, 'bin', 'omarchy-agent-usage-claude');
+    fs.writeFileSync(file, mutate(fs.readFileSync(file, 'utf8')));
+    const r = run(x);
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /adapter unavailable or incompatible; no CLI fallback/);
+    assert.doesNotMatch(r.stdout + r.stderr, /Traceback|RuntimeError/);
+    assert.equal(calls(x), 'copilot --limits-only\n');
+    assert.deepEqual(saved(x, 'claude'), { ...old, limitsStale: true });
+    assert.equal(saved(x, 'copilot').limitsStale, false);
+    assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+    assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+  }
+});
+
+test('only exact whitelisted native statuses are logged, without extra probes', (t) => {
+  const allowed = ['Limits paused', 'Sign-in expired', 'Waiting for auth', 'Claude limits unavailable'];
+  for (const status of [...allowed, 'SECRET-status', 'Limits paused SECRET-suffix',
+    'Limits paused\nSECRET-newline', { token: 'SECRET-object' }]) {
+    const x = fixture(t);
+    collector(x, 'claude', json(record('claude', {
+      limitsFetchedAt: 0, limits: [], usageStatusText: status,
+      authHelpText: 'SECRET-auth-help',
+      accounts: [{ id: 'SECRET-account-id', limits: [], fetchedAt: 0 }],
+    })) + '\necho SECRET-stderr >&2');
+    const r = run(x, ['claude']);
+    assert.equal(r.status, 1);
+    const output = r.stdout + r.stderr;
+    if (allowed.includes(status)) assert.ok(output.includes(`native status: ${status}\n`));
+    else assert.doesNotMatch(output, /native status:/);
+    assert.doesNotMatch(output, /SECRET/);
+    assert.equal(calls(x), 'claude --limits-only\n');
+    const retry = run(x, ['claude']);
+    assert.equal(retry.status, 0);
+    assert.match(retry.stdout, /retry deferred/);
+    assert.doesNotMatch(retry.stdout + retry.stderr, /native status:|SECRET/);
+    assert.equal(calls(x), 'claude --limits-only\n');
+  }
 });
 
 test('default OMARCHY_PATH is exported without invoking a real collector', (t) => {
@@ -326,7 +416,7 @@ test('timeout preserves old quota as stale and kills owned group', (t) => {
   const x = fixture(t), old = record('claude');
   prior(x, 'claude', old);
   collector(x, 'claude', 'sleep 30 &\necho $! > "$HOME/child"\nwait');
-  const r = harness(x, 'assert m.TIMEOUT == 45\nm.TIMEOUT=0.1');
+  const r = harness(x, 'assert m.TIMEOUT == 45\nm.TIMEOUT=0.5');
   assert.equal(r.status, 1);
   assert.deepEqual(saved(x, 'claude'), { ...old, limitsStale: true });
   const proc = `/proc/${fs.readFileSync(path.join(x.home, 'child'), 'utf8').trim()}/stat`;
