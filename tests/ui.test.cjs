@@ -6,15 +6,12 @@
 // tests.
 const { test, before, after } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 
 const repo = path.resolve(__dirname, "..");
 const sourceMod = path.join(repo, "mods/fleet-quota");
-const hasBackend = ["fleet.js", "model.js"].every((file) =>
-  fs.existsSync(path.join(sourceMod, file)));
 
 const NOW = Date.now();
 const iso = (offsetMs) => new Date(NOW + offsetMs).toISOString();
@@ -177,8 +174,8 @@ function element(kind) {
     on_hover() {
       return api;
     },
-    hover(declare) {
-      return declare(api) ?? api;
+    hover() {
+      return api;
     },
     tooltip(value) {
       node.props.tooltip = value;
@@ -309,7 +306,7 @@ before(async () => {
   await fsp.mkdir(app, { recursive: true });
   await fsp.writeFile(path.join(app, "package.json"), JSON.stringify({ type: "module" }));
   await fsp.copyFile(path.join(sourceMod, "main.js"), path.join(app, "main.js"));
-  // The backend is a separate worker's: this copy answers through __fleet.
+  // This copy isolates UI behavior from the reader.
   await fsp.writeFile(
     path.join(app, "fleet.js"),
     "export async function collectFleet(input) {\n  return globalThis.__fleet(input);\n}\n",
@@ -349,10 +346,9 @@ before(async () => {
   await fsp.mkdir(actual, { recursive: true });
   await fsp.writeFile(path.join(actual, "package.json"), JSON.stringify({ type: "module" }));
   for (const file of ["main.js", "fleet.js", "model.js"]) {
-    if (!fs.existsSync(path.join(sourceMod, file))) continue;
     await fsp.copyFile(path.join(sourceMod, file), path.join(actual, file));
   }
-  if (hasBackend) RealMod = (await import(path.join(actual, "main.js"))).default;
+  RealMod = (await import(path.join(actual, "main.js"))).default;
 });
 
 after(async () => {
@@ -676,9 +672,7 @@ test("every bundled icon is a 24-unit outline the mod can reference", async () =
   }
 });
 
-test("the redesigned panel consumes the real backend's readings", {
-  skip: hasBackend ? false : "backend files are not in mods/fleet-quota yet",
-}, async () => {
+test("the redesigned panel consumes the real backend's readings", async () => {
   const reads = [];
   installHerdr({
     props: { part: "bar" },
