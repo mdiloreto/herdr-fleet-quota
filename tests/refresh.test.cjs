@@ -83,8 +83,7 @@ async function assertUnknown(x) {
   assert.ok(rows.length);
   for (const row of rows) {
     assert.equal(row.stale, true);
-    // Runs against the own-repo model after coordinator integration.
-    if (model.availabilityOf) assert.equal(model.availabilityOf(row, { hostStatus: 'ok', now: Date.now() }).state, 'unknown');
+    assert.equal(model.availabilityOf(row, { hostStatus: 'ok', now: Date.now() }).state, 'unknown');
   }
 }
 

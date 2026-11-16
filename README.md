@@ -99,17 +99,17 @@ Needed only on a Linux host that has no running Omarchy bar. Install it on that 
 
 **Providers.** Claude and Copilot only, to start: the helper accepts just those two names and rejects anything else before making any call, and the unit names both. It does not query OpenAI or OpenRouter. Adding a provider is an explicit code change to that allowlist, because each one means a headless authenticated request. The viewer can still show other providers (for example Codex) whenever the existing collector has written a fresh record for them.
 
-**Schedule.** A systemd user timer starts a one-shot service 30 seconds after the timer starts and then 60 seconds after each run finishes, so runs never overlap (a lock also prevents it). A pass is bounded: each collector call is killed after 45 seconds and the service after 120.
+**Schedule.** A systemd user timer first becomes due 30 seconds after boot; enabling it later makes that first run due immediately. It then runs 60 seconds after each pass finishes. A lock prevents overlapping helper processes. Each collector call is bounded to 45 seconds and the service to 120.
 
-**Failure behaviour.** Before every provider call the helper durably records the next allowed attempt; if that cannot be written, it makes no call. After a failure that provider waits 60 seconds, then 120, 240, 480 and at most 900 seconds, independently of the other provider. A success resets the wait to 60 seconds. When a probe fails, times out or returns something invalid, the previous quota is kept with its original times but flagged stale, so the viewer shows it as unavailable with the old time explicit instead of presenting it as current. Each account's freshness is decided on its own.
+**Failure behaviour.** Before every provider call the helper durably records the next allowed attempt; if that cannot be written, it makes no call. After a failure that provider waits 60 seconds, then 120, 240, 480 and at most 900 seconds, independently of the other provider. A success resets the wait to 60 seconds. Only a nonempty measurement stamped during that provider's invocation can confirm new quota. Cached answers, failed probes and empty responses preserve the historical values and times marked stale, so the viewer treats them as unverified. Each account's freshness is decided on its own. This is intentionally conservative if another refresher has just populated the native 15-second cache.
 
-**Files it touches.** Its own copy at `~/.local/bin/herdr-fleet-quota-refresh`, two units in `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, the provider records it refreshes in `$XDG_STATE_HOME/omarchy/agents/usage/` (default `~/.local/state/…`), and its own control files (backoff state and lock) in `$XDG_STATE_HOME/herdr-fleet-quota/`. Everything is created private (mode 0600/0700); symbolic links and oversized files are refused.
+**Files it touches.** Installation places the helper at `~/.local/bin/herdr-fleet-quota-refresh` (0755) and two units in `${XDG_CONFIG_HOME:-~/.config}/systemd/user/` (0644). Runtime writes the selected provider records under `$XDG_STATE_HOME/omarchy/agents/usage/` and its own backoff state/lock under `$XDG_STATE_HOME/herdr-fleet-quota/`. New runtime files and directories use private permissions (0600/0700); existing directories keep their permissions. Symbolic links and oversized records are refused.
 
 **Requirements.**
 
 - Linux with a systemd *user* manager running. Without linger the timer only runs while you have a session; enabling linger is your own decision and the installer never does it.
 - Omarchy's native collectors present (`OMARCHY_PATH`), and the provider tools logged in on that host.
-- When a login expires, the helper cannot fix it: a person has to log in again (Claude CLI for Claude, `gh` for Copilot). Until then the record stays stale and the viewer says so, with the older time. A failed or rate-limited probe leaves the record stale, never available.
+- The helper does not renew authentication. For a paused Claude access token, starting Claude Code normally can renew it; sign in again only if the CLI reports the saved sign-in has expired. Copilot uses the host's existing GitHub CLI login. Until a new quota measurement succeeds, the reading stays unverified with its older time.
 
 **Install** (explicit opt-in, then a separate step to start it):
 
@@ -119,7 +119,7 @@ bash scripts/install-refresh.sh --install    # copy the helper and two units; st
 systemctl --user daemon-reload && systemctl --user enable --now herdr-fleet-quota-refresh.timer
 ```
 
-or `bash scripts/install-refresh.sh --install --enable` to do the last step for you. `--enable` needs `--install`, and `--check` cannot be combined with either. When `systemd-analyze` exists the units are verified first and nothing is copied if that fails. Existing files that are identical are left alone; a differing file or a symbolic link is refused and nothing is changed. The installer does not restart any GUI, enable linger or make provider requests.
+or `bash scripts/install-refresh.sh --install --enable` to do the last step for you. `--enable` needs `--install`, and `--check` cannot be combined with either. When `systemd-analyze` exists the units are verified first and nothing is copied if that fails. Existing files that are identical are left alone; a differing file or a symbolic link is refused. Installation alone starts no quota requests; enabling the timer starts the authenticated quota reads described above. Neither operation restarts a GUI or enables linger.
 
 **Disable and remove** — scoped to what it installed:
 
@@ -142,7 +142,7 @@ A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine a
 - Remaining capacity comes from the collector's used fraction, and only a current reading counts. A stale, expired, incomplete or not-ready reading is not available capacity; the dialog says why and how old it is.
 - **Unknown is not zero.** A window whose reset has passed, or that has no percentage, is unknown until a new reading arrives.
 - A prepaid balance is shown as an amount. No percentage is inferred unless the record also states how much was funded. An estimated value is labelled estimated and does not count as confirmed capacity.
-- Nothing is summed or deduplicated. The same provider on two machines, or two accounts, stay separate, because the mod cannot verify whether logins share one quota. Balances of different accounts are never added.
+- The bar groups qualifying readings by provider name only. The underlying machines and accounts stay separate; the mod never combines their percentages or balances or claims they are distinct subscriptions.
 
 ## Tests
 
