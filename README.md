@@ -29,7 +29,7 @@ So a figure can be up to the collector period plus a minute old, and older still
 - Each **measured** host needs the Omarchy collector, `sh` and `jq`. A viewer-only machine (for example a Mac looking at Linux hosts through Herdr machines) needs no local Omarchy records, no local `jq` and no local collector; nothing is copied from the host to the viewer.
 - Source-verified against Omarchy 4.5.0-3 (pacman): it ships the stock `omarchy.agents` widget, which writes records to `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), and its refresher runs while that widget is enabled. The stock default configuration loads it. Collectors for Claude and Copilot exist upstream.
 - You still have to be logged in to each provider's tool on the measured host. Having a provider's model or CLI installed does not prove it reports capacity.
-- Not claimed: other or future Omarchy versions, a clean-machine end-to-end run, or that any login works. Verification so far is source review plus synthetic fixtures; a clean-VM run is planned for the beta. Do not expect a first reading out of the box until that has been done.
+- Verified on an existing Omarchy 4.5.0-3 host with continuous Claude/Copilot quota reads and a Mac Herdr viewer, including Claude monthly-spend responses. The viewer installer also passed fresh and repeat installs in an isolated Mac app home using the real Herdr checker. Other versions, fresh-machine authentication and a clean-VM end-to-end run still need beta qualification.
 
 Upstream: https://github.com/omacom/omarchy
 
@@ -133,7 +133,7 @@ systemctl --user disable --now herdr-fleet-quota-refresh.timer
 
 then delete only these three files and reload: `~/.local/bin/herdr-fleet-quota-refresh`, `~/.config/systemd/user/herdr-fleet-quota-refresh.service` and `~/.config/systemd/user/herdr-fleet-quota-refresh.timer` (use `$XDG_CONFIG_HOME` if you set it), then `systemctl --user daemon-reload`. Its control files in `$XDG_STATE_HOME/herdr-fleet-quota/` may be deleted once the timer is off. The provider records in the Omarchy usage folder are collector output: if nothing refreshes them any more they simply become stale and the viewer says so. There is no version manager or rollback: to update, disable the timer, review the differences, remove those three files and install again. Never delete a broader folder.
 
-**Verification status.** The helper has tests with fake collectors and synthetic fixtures (`tests/refresh.test.cjs`). It has not been run against a clean machine with real provider logins, so no out-of-the-box first reading is claimed.
+**Verification status.** The helper has fake-collector and synthetic-fixture tests (`tests/refresh.test.cjs`) and has refreshed both providers successfully on the existing Linux host without a desktop session. Those live readings were verified in the Mac viewer. A clean-machine run with newly established logins remains a separate beta requirement; existing-host success is not a claim that authentication is automatic.
 
 ## How the viewer reads
 
