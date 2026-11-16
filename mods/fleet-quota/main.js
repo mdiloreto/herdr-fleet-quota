@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { checking, closeOverlay, exec, hc, props, openOverlay, theme } from "herdr";
 import { collectFleet } from "./fleet.js";
-import { READ_SCRIPT } from "./model.js";
+import { availabilityOf, READ_SCRIPT } from "./model.js";
 
 // A read a minute: quota windows move by the hour, and every read is an exec
 // on each machine.
@@ -59,11 +59,6 @@ async function listMachines() {
 // says nothing of stderr, which can carry paths and credentials.
 function readHost(name) {
   return exec("sh", ["-c", READ_SCRIPT], { on: name, timeout: READ_TIMEOUT_MS });
-}
-
-function percentOf(used) {
-  if (typeof used !== "number" || !Number.isFinite(used)) return null;
-  return Math.round(Math.min(100, Math.max(0, used)));
 }
 
 function parseTime(value) {
@@ -169,8 +164,16 @@ function providerColor(t, id) {
   return t[providerOf(id)?.color] ?? t.accent;
 }
 
-function usageColor(t, pct, color) {
-  return pct >= 95 ? t.blocked : pct >= 80 ? t.working : color;
+function accountIdentity(host, row) {
+  return `${host.label || host.name || "This computer"}${row.accountLabel
+    ? ` · ${row.accountLabel} (${row.accountActive ? "active on host" : "not active on host"})` : ""}`;
+}
+
+function providerEvidence(group) {
+  return `${providerName(group.id)}: ${group.readings.map(({ host, row }) => {
+    const date = parseTime(row.updatedAt);
+    return `${accountIdentity(host, row)} · record ${date ? date.toLocaleString() : "time unknown"}`;
+  }).join("; ")}`;
 }
 
 function tile(t, path, color, size = 28) {
@@ -188,7 +191,10 @@ export default class FleetQuota extends View {
     // `herdr-app check` runs init for real: no timer, no hc, no exec, no network.
     if (checking()) return;
     this.refresh(cx);
-    cx.timer.every(REFRESH_MS, (cx) => this.refresh(cx));
+    cx.timer.every(REFRESH_MS, (cx) => {
+      cx.notify(); // Expire visible evidence even while a previous read is pending.
+      this.refresh(cx);
+    });
   }
 
   // One read at a time: a machine that hangs must not stack a minute's timers.
@@ -218,29 +224,30 @@ export default class FleetQuota extends View {
     });
   }
 
-  summary() {
-    const known = this.hosts.length;
-    const read = this.hosts.filter((h) => h.status === "ok").length;
-    const readings = this.hosts.flatMap((host) => (host.rows ?? [])
-      .filter((row) => percentOf(row.used) !== null)
-      .map((row) => ({ host, row })));
-    const highest = readings.reduce((best, item) => !best || item.row.used > best.row.used ? item : best, null);
-    const old = highest && (highest.row.stale || highest.host.status !== "ok");
-    const incomplete = !!this.discoveryError || !!this.failure || this.hosts.some((host) =>
-      host.status !== "ok" || host.errors > 0 || (host.rows ?? []).some((row) =>
-        row.used === null || (row.windows ?? []).some((window) => window.used === null)));
-    return { known, read, highest, old, incomplete };
+  availableProviders(now) {
+    const groups = new Map();
+    for (const host of this.hosts) {
+      for (const row of host.rows ?? []) {
+        const availability = availabilityOf(row, { hostStatus: this.failure ? "error" : host.status, now });
+        if (availability.state !== "available") continue;
+        if (!groups.has(row.id)) groups.set(row.id, { id: row.id, readings: [] });
+        groups.get(row.id).readings.push({ host, row });
+      }
+    }
+    return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // Highest reported, never a fleet total. Clickable even before the first read.
+  unverifiedLabel() {
+    return !this.refreshedAt && !this.failure && !this.discoveryError ? "Checking…" : "Unverified";
+  }
+
+  // Provider identity only; independent host/account evidence stays in the tooltip.
   bar(t) {
-    const { known, read, highest, old, incomplete } = this.summary();
-    const value = `${highest ? `${percentOf(highest.row.used)}%${old ? "~" : ""}` : "—"}${incomplete ? "!" : ""}`;
-    const account = highest?.row.accountLabel ? ` · ${highest.row.accountLabel}` : "";
-    const label = highest
-      ? `Highest reported quota used: ${value} on ${highest.host.label}, ${highest.row.id}${account}. ${read} of ${known} machines with readings. Values are not added.${incomplete ? " Some machines or quota percentages are unavailable." : ""}`
-      : `Fleet quota: ${read} of ${known} machines with readings. No percentage available.${incomplete ? " Some machines or quota percentages are unavailable." : ""}`;
-    const dot = incomplete ? (t.working ?? t.dim) : known && read === known ? t.done : t.dim;
+    const groups = this.availableProviders(Date.now());
+    const visible = groups.slice(0, groups.length > 3 ? 2 : 3);
+    const extra = groups.length - visible.length;
+    const label = groups.length ? `Reported quota remaining. ${groups.map(providerEvidence).join("\n")}`
+      : `${this.unverifiedLabel()}. No provider has confirmed remaining quota in fresh readings.`;
     return h_flex()
       .id("fleet-quota-bar")
       .h_full()
@@ -258,8 +265,13 @@ export default class FleetQuota extends View {
       .tooltip(label)
       .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
       .on_click((_event, cx) => { cx.stop_propagation(); this.open(); })
-      .child(icon(ICON.gauge, 13, dot))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).font_semibold().text_color(t.foreground).child(`AI ${value}`))
+      .children(visible.map((group) => tile(t, providerIcon(group.id), providerColor(t, group.id), 24)
+        .id(`fleet-bar-provider-${group.id}`).tooltip(providerEvidence(group)).accessibility_label(providerEvidence(group))))
+      .when(extra > 0, (el) => el.child(div().id("fleet-bar-more").w(26).flex_none().text_size(10)
+        .text_color(t.muted).child(extra > 99 ? "+99+" : `+${extra}`)))
+      .when(!groups.length, (el) => el.child(div().min_w(0).truncate().text_size(11)
+        .text_color(t.muted).child(this.unverifiedLabel())))
+      .child(div().flex_1())
       .child(icon(ICON.chevron, 10, t.dim));
   }
 
@@ -280,7 +292,7 @@ export default class FleetQuota extends View {
 
   panel(t) {
     const now = Date.now();
-    const summary = this.summary();
+    const groups = this.availableProviders(now);
     return v_flex()
       .id("fleet-quota-panel")
       .size_full()
@@ -295,9 +307,9 @@ export default class FleetQuota extends View {
           .child(tile(t, ICON.gauge, t.accent, 34))
           .child(
             v_flex().flex_1().min_w(0).gap(1)
-              .child(div().text_size(20).font_semibold().child("Fleet quota"))
+              .child(div().text_size(20).font_semibold().child("Reported quota remaining"))
               .child(div().text_size(11).text_color(t.muted)
-                .child(this.loading ? "Reading saved quota records…" : "AI usage · per machine, per account")),
+                .child(this.loading ? "Reading saved quota records…" : "Independent readings · per machine, per account")),
           )
           .child(
             h_flex().gap(2).items_center().flex_none()
@@ -307,7 +319,7 @@ export default class FleetQuota extends View {
                 () => closeOverlay(props().overlay), false)),
           ),
       )
-      .child(this.overview(t, summary, now))
+      .child(this.overview(t, groups))
       .when(Boolean(this.failure || this.discoveryError), (el) =>
         el.child(this.notice(t)),
       )
@@ -319,7 +331,7 @@ export default class FleetQuota extends View {
           .min_w(0)
           .gap(10)
           .overflow_y_scrollbar()
-          .when(!summary.known, (el) => el.child(this.empty(t)))
+          .when(!this.hosts.length, (el) => el.child(this.empty(t)))
           .children(this.hosts.map((host, index) => this.host(t, host, index, now))),
       )
       .child(
@@ -327,34 +339,23 @@ export default class FleetQuota extends View {
           .text_size(11)
           .text_color(t.muted)
           .child(
-            "Machines can share one account; nothing here is added up. Old = saved reading · ! = missing coverage.",
+            "Saved quotas, not a routing guarantee. Machines may share accounts; readings are never added. Refresh rereads records, not providers.",
           ),
       );
   }
 
-  overview(t, { known, read, highest, old, incomplete }, now) {
-    const pct = highest ? percentOf(highest.row.used) : null;
-    const color = highest ? usageColor(t, pct, providerColor(t, highest.row.id)) : t.muted;
-    const source = highest
-      ? `${providerName(highest.row.id)} · ${highest.host.label}${highest.row.accountLabel ? ` · ${highest.row.accountLabel}` : ""}`
-      : "No percentage available";
-    return h_flex().id("fleet-overview").flex_none().min_w(0).gap(10)
-      .child(v_flex().id("fleet-highest").flex_1().min_w(0).gap(3)
-        .p(10).rounded(8).bg(t.surface).border_l(3).border_color(color)
-        .child(div().text_size(10).text_color(t.muted).child("HIGHEST REPORTED USAGE"))
-        .child(h_flex().gap(8).items_center().flex_wrap()
-          .child(div().text_size(24).font_semibold().text_color(color).child(pct === null ? "—" : `${pct}%`))
-          .when(pct !== null, (el) => el.child(pill(t, old ? "old" : "current", old ? t.working : t.done))))
-        .child(div().text_size(11).min_w(0).truncate().tooltip(source).accessibility_label(source)
-          .text_color(t.muted).child(source)))
-      .child(v_flex().id("fleet-coverage").flex_1().min_w(0).gap(3)
-        .p(10).rounded(8).bg(t.surface).border_l(3).border_color(incomplete ? t.working : t.accent)
-        .child(div().text_size(10).text_color(t.muted).child("MACHINES WITH READINGS"))
-        .child(h_flex().gap(8).items_center().flex_wrap()
-          .child(div().text_size(24).font_semibold().child(`${read} / ${known}`))
-          .when(incomplete, (el) => el.child(pill(t, "! incomplete", t.working))))
-        .child(stamp(t, this.refreshedAt, "checked", now)
-          ?? div().text_size(11).text_color(t.muted).child("No machines read yet")));
+  overview(t, groups) {
+    return h_flex().id("fleet-overview").flex_none().min_w(0).gap(6).flex_wrap()
+      .when(!groups.length, (el) => el.child(pill(t, this.unverifiedLabel(), t.muted)))
+      .children(groups.slice(0, 6).map((group) => h_flex().id(`fleet-available-${group.id}`)
+        .min_w(0).max_w(180).gap(6).px(8).py(5).items_center().rounded(7).bg(t.surface)
+        .border(1).border_color(providerColor(t, group.id))
+        .tooltip(providerEvidence(group)).accessibility_label(providerEvidence(group))
+        .child(icon(providerIcon(group.id), 14, providerColor(t, group.id)))
+        .child(div().min_w(0).truncate().text_size(12).text_color(providerColor(t, group.id)).child(providerName(group.id)))))
+      .when(groups.length > 6, (el) => el.child(pill(t, `+${groups.length - 6} more`, t.muted)
+        .tooltip(groups.slice(6).map(providerEvidence).join("\n"))
+        .accessibility_label(groups.slice(6).map(providerEvidence).join("\n"))));
   }
 
   iconButton(t, id, path, label, onClick, busy) {
@@ -450,15 +451,17 @@ export default class FleetQuota extends View {
         el.child(div().text_size(11).text_color(t.dim).child("Some accounts omitted: limit 16 per provider.")))
       .when(Number(host?.truncatedWindows) > 0, (el) =>
         el.child(div().text_size(11).text_color(t.dim).child("Some quota windows omitted: limit 20 per account.")))
-      .children(rows.map((row, index) => this.provider(t, row, hostIndex, index, now, earlier)));
+      .children(rows.map((row, index) => this.provider(t, row, hostIndex, index, now, this.failure ? "error" : host.status)));
   }
 
   // One provider or account on one machine, under its own windows.
-  provider(t, row, hostIndex, rowIndex, now, earlier = false) {
+  provider(t, row, hostIndex, rowIndex, now, hostStatus) {
     const windows = Array.isArray(row?.windows) ? row.windows : [];
     const updated = stamp(t, row?.updatedAt, "record", now);
     const color = providerColor(t, row?.id);
-    const stale = earlier || Boolean(row?.stale);
+    const stale = hostStatus !== "ok" || Boolean(row?.stale) || (Number.isFinite(row?.freshUntil) && now > row.freshUntil);
+    const availability = availabilityOf(row, { hostStatus, now });
+    const freshness = !Number.isFinite(row?.freshUntil) ? "time unknown" : stale ? "old" : "current";
     const name = providerName(row?.id);
     return v_flex()
       .id(`fleet-provider-${hostIndex}-${rowIndex}`)
@@ -473,26 +476,35 @@ export default class FleetQuota extends View {
             .when(Boolean(row?.accountLabel), (el) => el.child(div().text_size(11).text_color(t.muted)
               .min_w(0).truncate().tooltip(row.accountLabel).accessibility_label(row.accountLabel).child(row.accountLabel)))
             .child(updated ?? div().text_size(11).text_color(t.muted).child("Record time unknown")))
-          .child(pill(t, stale ? "old" : "current", stale ? t.working : t.done)),
+          .child(pill(t, freshness, freshness === "current" ? t.done : t.working)),
       )
-      .when(Boolean(row?.accountActive || row?.incomplete), (el) => el.child(h_flex().gap(6).items_center().flex_wrap().min_w(0)
-        .when(Boolean(row?.accountActive), (el) => el.child(pill(t, "active", color)))
+      .child(div().id(`fleet-availability-${hostIndex}-${rowIndex}`).text_size(11)
+        .text_color(availability.state === "available" ? t.done : availability.state === "exhausted" ? t.working : t.muted)
+        .child(availability.reason))
+      .when(Boolean(row?.accountLabel || row?.incomplete), (el) => el.child(h_flex().gap(6).items_center().flex_wrap().min_w(0)
+        .when(Boolean(row?.accountLabel), (el) => el.child(pill(t, row.accountActive ? "active on host" : "not active on host", color)))
         .when(Boolean(row?.incomplete), (el) => el.child(pill(t, "incomplete", t.working)))))
       .when(!windows.length, (el) => el.child(div().text_size(11).text_color(t.dim).child("No quota reported.")))
       .children(windows.map((w, index) => this.window(t, w, row, hostIndex, rowIndex, index, now, stale)));
   }
 
   window(t, w, row, hostIndex, rowIndex, windowIndex, now, stale = Boolean(row?.stale)) {
-    const pct = percentOf(w?.used);
     const balance = Boolean(w?.isBalance);
     const reset = balance ? null : resetLabel(w?.resetsAt, now);
     const resetAt = parseTime(w?.resetsAt);
-    const label = w?.label ?? "—";
-    const reading = pct === null ? (balance ? "no percentage" : "? used") : `${pct}% used`;
-    const clip = `${pct === null
-      ? (balance ? "no percentage available" : "percentage unavailable, not zero")
-      : `${pct} percent used`}${stale ? ", from an earlier reading" : ""}`;
-    const color = usageColor(t, pct, providerColor(t, row?.id));
+    const raw = balance ? w?.remaining : reset === "passed" ? null : w?.remainingPercent;
+    const remaining = Number.isFinite(raw) && raw >= 0 ? raw : null;
+    const label = balance ? "Prepaid balance" : w?.label ?? "—";
+    const currency = w?.currency ? ` ${w.currency}` : "";
+    const amount = remaining === null ? null : balance
+      ? remaining === 0 ? "0" : remaining < 0.01 ? "<0.01" : remaining.toFixed(2)
+      : remaining > 0 && remaining < 1 ? "<1" : String(Math.round(remaining * 10) / 10);
+    const reading = remaining === null ? "Remaining unknown"
+      : `${amount}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
+    const exact = remaining === null ? "Remaining unknown, not zero"
+      : `${remaining}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
+    const color = remaining === 0 ? t.working : providerColor(t, row?.id);
+    const reason = reset === "passed" ? "Awaiting reading after reset" : w?.reason;
     const resetText = reset === "passed" ? "reset passed" : `resets ${reset}`;
     return v_flex()
       .id(`fleet-window-${hostIndex}-${rowIndex}-${windowIndex}`)
@@ -500,9 +512,9 @@ export default class FleetQuota extends View {
       .child(h_flex().gap(8).items_center().min_w(0)
         .child(div().flex_1().min_w(0).truncate().text_size(12).tooltip(label).accessibility_label(label).child(label))
         .child(div().id(`fleet-window-pct-${hostIndex}-${rowIndex}-${windowIndex}`)
-          .w(100).flex_none().text_right().text_size(12).font_semibold()
-          .text_color(pct === null ? t.muted : color).child(reading)))
-      .child(h_flex().gap(10).items_center().min_w(0).child(
+          .w(190).flex_none().truncate().tooltip(exact).accessibility_label(exact).text_right().text_size(12).font_semibold()
+          .text_color(remaining === null ? t.muted : color).child(reading)))
+      .child(h_flex().gap(10).items_center().min_w(0).when(!balance, (el) => el.child(
         h_flex()
           .id(`fleet-window-track-${hostIndex}-${rowIndex}-${windowIndex}`)
           .flex_1().min_w(0)
@@ -512,18 +524,19 @@ export default class FleetQuota extends View {
           .overflow_hidden()
           .bg(t.border)
           .role("progress_indicator")
-          .accessibility_label(`${label}: ${clip}`)
-          .when(pct !== null, (el) =>
+          .accessibility_label(`${label}: ${exact}${stale ? ", from an earlier reading" : ""}`)
+          .when(remaining !== null, (el) =>
             el.child(div()
               .id(`fleet-window-fill-${hostIndex}-${rowIndex}-${windowIndex}`)
               .h_full()
               .flex_none()
-              .w(`${pct}%`)
+              .w(`${Math.min(100, remaining)}%`)
               .rounded(3)
               .bg(color).opacity(stale ? 0.75 : 1))),
-      )
+      ))
         .child(div().w(142).flex_none().text_right().text_size(10).text_color(t.muted)
           .tooltip(balance ? "Prepaid balance · no reset window" : resetAt ? resetAt.toLocaleString() : "Reset time unknown")
-          .child(balance ? "prepaid balance" : resetText)));
+          .child(balance ? "prepaid balance" : resetText)))
+      .when(Boolean(reason), (el) => el.child(div().text_size(11).text_color(t.muted).child(reason)));
   }
 }
