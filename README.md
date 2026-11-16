@@ -9,7 +9,7 @@ This repository is the mod's development source. A separate personal configurati
 ## What it shows
 
 - **Badge** (118 px wide): the highest percentage reported anywhere across the fleet, with `~` when that highest reading is old or from an offline host and `!` when coverage is incomplete. Click it to open the dialog.
-- **Dialog** (620×560): a heading with how many machines have a reading, a section per machine with its status and read time, provider/account rows, and a progress track per quota window with its reset time. Unknown, old and offline readings say so.
+- **Dialog** (620×560): separate highest-reported usage and coverage summaries, color-coded provider cards grouped by machine, and a progress track per quota window. Amber and red emphasize high usage; explicit badges distinguish current, old and incomplete readings. Compact timestamps keep the exact time available on hover.
 
 ## Requirements
 
@@ -20,6 +20,8 @@ This repository is the mod's development source. A separate personal configurati
 
 A host without the collector legitimately shows `no data`. This mod does not install providers, collectors or credentials anywhere.
 
+The current integration is tested with `mateod.agents` quota records. A stock Omarchy installation is not guaranteed to produce these files; collector onboarding and a clean-machine installer are planned separately.
+
 ## How it reads
 
 Every 60 seconds the mod asks Herdr for the machine list (`hc machine ls --json`), then runs one fixed shell script on each connected machine over Herdr's existing connection — no new ports, no extra config, no provider network calls. The script reads at most 64 record files (256 KiB each), honours disabled providers from the optional Omarchy `shell.json`, and prints only bounded quota fields: ids, timestamps, labels, percentages, reset times, remaining balances and account labels. Up to four hosts are read at once, each with an 8-second timeout.
@@ -29,8 +31,9 @@ A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine a
 ## Install
 
 1. Copy only `mods/fleet-quota` into `~/.config/herdr-app/mods/fleet-quota`. Check that destination first: if it already exists, review it and back it up instead of overwriting.
-2. Add the block from `examples/bar-block.json` to a row in your layout, where the badge should sit. It is a fragment, not a whole layout — keep your own layout and `keys.json`; this repository ships neither.
-3. Verify: `herdr-app check ~/.config/herdr-app/mods/fleet-quota`, then `herdr-app status` for errors, then `herdr-app shot` to see the badge.
+2. If you use a shipped layout, clone it first; for example, `herdr-app do layout.clone '{"name":"main","as":"my-layout"}'` creates and activates a personal copy. Choose an unused name. Herdr restores shipped layouts on restart, so edit the clone, not the shipped original. An existing personal layout needs no clone.
+3. Add the block from `examples/bar-block.json` to a row in your personal layout, where the badge should sit. It is a fragment, not a whole layout — keep your own layout and `keys.json`; this repository ships neither.
+4. Verify: `herdr-app check ~/.config/herdr-app/mods/fleet-quota`, then `herdr-app status` for errors, then `herdr-app shot` to see the badge.
 
 You can also open the detail directly with `herdr-app do mod.open --name fleet-quota`.
 

@@ -6,6 +6,10 @@ A Herdr mod that shows the AI quota each machine in your fleet has already recor
 
 ## What you see
 
+The panel uses colored icon tiles and a left accent on each provider card: theme amber for Claude, cyan for Codex, violet for Copilot, blue for OpenRouter and pink for Antigravity. Unknown providers use the theme accent and their original id. A separate overview shows the highest reported percentage and machine coverage; neither is a sum of quotas.
+
+Quota fills retain their provider color below 80%, use the theme warning color from 80%, and the blocked color from 95%. Old readings retain color at reduced opacity, with an explicit `old` badge; current readings have a `current` badge. Missing percentages have no fill and an explicit unknown label. These are presentation thresholds, not provider-enforced limits.
+
 **The badge**, 118 px wide and as tall as its bar: a compact indicator plus the fleet's highest reported quota percentage. The indicator distinguishes complete coverage from incomplete coverage, and the number carries `~` when the highest reading itself is old or from an offline host and `!` when any machine, percentage or record is missing. The whole badge is a button: clicking it opens the dialog, and its tooltip and accessibility label name the host, provider and account behind the number and how many machines were read.
 
 **The dialog**, 620×560, centered, top to bottom:
@@ -43,6 +47,8 @@ Type, spacing and colors come from the active Herdr theme; the mod sets no fixed
 Reading semantics in one place: record percentages are fractions (`0.42` → `42% used`), clamped at 100 because overage is real; a window whose reset time has passed is unknown (`?`); a row is old when the producer says stale, its timestamp is older than the larger of 30 minutes and twice the collector interval, or it is more than 5 minutes in the future; a balance gets a percentage only when `funded` is present and the remaining amount does not exceed it.
 
 ## Watch out
+
+- **Clone shipped layouts before editing.** Add the bar block to an existing personal layout or a copy made with `layout.clone`; Herdr restores shipped originals on restart.
 
 - **The collector is an assumption, not a dependency to install.** No Omarchy quota records on a host means `no data`, which is a correct outcome. Do not add providers, credentials or collector files to make a host light up.
 - **Unix hosts only.** The reader needs `sh` and `jq`; a Windows host cannot answer it and reads as `error`.
