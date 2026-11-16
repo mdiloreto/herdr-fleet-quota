@@ -10,6 +10,6 @@
   },
   "scripts": {
     "test": "node --test tests/*.test.cjs",
-    "check": "for f in mods/fleet-quota/*.js; do node --check \"$f\" || exit 1; done && sh -n scripts/install.sh"
+    "check": "for f in mods/fleet-quota/*.js; do node --check \"$f\" || exit 1; done && sh -n scripts/install.sh && bash -n scripts/install-refresh.sh && python3 -B -c 'import ast,sys; [ast.parse(open(p).read(), p) for p in sys.argv[1:]]' scripts/refresh.py"
   }
 }

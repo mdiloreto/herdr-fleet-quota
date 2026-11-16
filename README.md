@@ -2,26 +2,48 @@
 
 A Herdr mod that tells you which AI providers still have capacity, across every machine in your Herdr fleet. A compact top-bar badge shows the providers that currently report remaining capacity; a dialog shows the detail per machine, provider and account.
 
-These are real quota readings, not cost estimates. The mod reads the usage records the Omarchy agents widget already writes on each measured host. It never calls a provider, never adds accounts or balances together, and never installs a collector.
+These are saved quota readings, not cost estimates and not a live meter. The mod reads the usage records the Omarchy agents collector writes on each measured host. It never calls a provider itself, never adds accounts or balances together, and never installs a collector. An optional, separate helper for headless Linux hosts (below) can keep those records fresh; it is not part of the viewer install.
 
 Status: private, unlicensed, pre-beta. This repository is the mod's development source. A separate personal configuration repository keeps a vendored copy for everyday use; that copy is updated by hand, in one direction, and no sync script ships here.
 
 ## What it shows
 
-- **Top-bar badge** (118 px, optional): icons of the providers that currently report remaining capacity — up to three, or two plus a `+N` count when there are more. Hovering names them. It shows no percentage and no warning marks. With nothing to show it says so honestly: *Checking* while the first read runs, *Unverified* when no capacity could be confirmed (no collector data, offline, stale). Neither means zero or exhausted. Clicking opens the dialog.
-- **Dialog** (620×560): per machine, then per provider or account, the remaining capacity of each quota window or balance, the exact age of the reading and its reset time, and, for a host or account without a usable reading, why it is unavailable (for example offline, no collector data, stale or incomplete record). There is no fleet-wide "highest" or "incomplete" headline.
+- **Top-bar badge** (118 px, optional): icons of the providers that currently have confirmed remaining capacity — up to three, or two plus a `+N` count when there are more. Hovering names each provider and the machine and account behind it, with the record time. There is no percentage and no warning mark. With nothing to show it says *Checking…* while the first read runs and *Unverified* afterwards; neither means zero or exhausted. Clicking opens the dialog.
+- **Dialog** (620×560, "Reported quota remaining"): the available providers, then one card per machine and, inside it, one card per provider or account. Each shows how much remains in every quota window (`N% remaining`) or the prepaid balance as an amount, the exact reset time on hover, the age of the record, and a reason when it is not available (for example machine offline, read failed, provider not ready, reading stale, windows omitted, awaiting a reading after a reset). There is no fleet-wide "highest used" or "incomplete" headline.
+- A provider counts as available only from a current, complete reading with capacity left in every window. An exhausted window, a stale or future-dated reading, an estimated value or an unknown percentage is never shown as available capacity, and unknown is never shown as zero.
+- Every machine and every account is judged on its own. Which account is active on a host does not make another account's reading current, and nothing is added up.
+
+## Three clocks, not one
+
+Quota freshness involves three separate things. Keep them apart:
+
+1. **The viewer polls saved files every 60 seconds.** Herdr runs one fixed read-only script per connected machine and parses the records. This reads files already on the host; it makes no provider request.
+2. **The collector queries the provider's quota endpoint on its own schedule.** That is the stock Omarchy refresher at its configured interval, or the optional headless helper below. This is the only step that touches a provider.
+3. **Each record carries the time its quota was actually fetched.** The dialog shows this age. It is what the numbers really reflect.
+
+So a figure can be up to the collector period plus a minute old, and older still if a probe failed. A reading is treated as stale after roughly 30 minutes or twice the collector's refresh interval, whichever is longer. Nothing here is instant or guaranteed live, and the dialog's reread button rereads saved records — it does not query a provider.
 
 ## Compatibility and prerequisites
 
 - Herdr desktop app on the machine where you look at it (Linux or macOS). The installer needs `sh` and the native `herdr-app` CLI.
-- Each **measured** host needs the Omarchy AI quota collector running, `sh`, and `jq`. A viewer-only machine (for example a Mac looking at Linux hosts through Herdr machines) needs no local Omarchy records, no local `jq` and no local collector.
+- Each **measured** host needs the Omarchy collector, `sh` and `jq`. A viewer-only machine (for example a Mac looking at Linux hosts through Herdr machines) needs no local Omarchy records, no local `jq` and no local collector; nothing is copied from the host to the viewer.
 - Source-verified against Omarchy 4.5.0-3 (pacman): it ships the stock `omarchy.agents` widget, which writes records to `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), and its refresher runs while that widget is enabled. The stock default configuration loads it. Collectors for Claude and Copilot exist upstream.
-- You still have to be logged in to each provider's tool on the measured host. Having a provider's model or CLI installed does not prove it reports capacity. A host without records shows as unavailable, which is a correct outcome.
-- Not claimed: other or future Omarchy versions, a clean-machine end-to-end run, or that any login works. Verification so far is source review plus synthetic fixtures; a clean-machine run is planned for the beta.
+- You still have to be logged in to each provider's tool on the measured host. Having a provider's model or CLI installed does not prove it reports capacity.
+- Not claimed: other or future Omarchy versions, a clean-machine end-to-end run, or that any login works. Verification so far is source review plus synthetic fixtures; a clean-VM run is planned for the beta. Do not expect a first reading out of the box until that has been done.
 
-The mod does not install providers, collectors or credentials and does not read credentials. Upstream: https://github.com/omacom/omarchy
+Upstream: https://github.com/omacom/omarchy
 
-## Install
+## Which path do I need?
+
+| Measured host | What keeps its records fresh | What you install |
+|---|---|---|
+| Linux with the stock Omarchy desktop bar running and the agents widget enabled | Omarchy's own GUI refresher | The viewer mod only |
+| Headless Linux (no bar, no GUI session) | Nothing, unless you add the optional helper | The viewer mod, plus the headless helper on that host |
+| Mac (or any machine) used only to look | Not applicable: it reads the remote hosts | The viewer mod only |
+
+An existing local GUI refresher and the headless helper may both call the native collector, which has its own short cache (about 15 seconds). No global de-duplication between upstream's refresher and this helper is promised.
+
+## Install the viewer
 
 ```sh
 sh scripts/install.sh              # read-only report; same as --check or --dry-run
@@ -29,7 +51,7 @@ sh scripts/install.sh --install    # copy the mod into the Herdr app home
 herdr-app do mod.open --name fleet-quota
 ```
 
-The report is the default and changes nothing. It prints the paths, the prerequisites it found and the exact actions an install would take.
+The report is the default and changes nothing. It prints the paths, the prerequisites it found and the exact actions an install would take. It makes no provider request and does not touch services.
 
 `--install` copies only the mod's own files — `main.js`, `model.js`, `fleet.js`, `mod.json` and the eight SVGs in `icons/` — into `mods/fleet-quota` inside the Herdr app home: `$HERDR_APP_HOME`, else `~/.config/herdr-app` (the app writes its own guide, `AGENTS.md`, there; guide: https://herdr.dev/guide). The Herdr home must already exist: start Herdr once, or point `HERDR_APP_HOME` at it. Order of operations:
 
@@ -57,7 +79,7 @@ herdr-app do layout.clone '{"name":"main","as":"my-layout"}'
 
 The block is a fragment, not a whole layout. The dialog works without it via the `mod.open` command above. Confirm with `herdr-app status`; `herdr-app shot` saves a screenshot.
 
-### Update and uninstall
+### Update and uninstall the viewer
 
 There is no updater or rollback in this first release. To update, compare the new `mods/fleet-quota` with your installed copy, back up that one folder, remove it, and run `sh scripts/install.sh --install` again.
 
@@ -69,22 +91,62 @@ rm -r "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/fleet-quota"
 
 Then delete the `fleet-quota` block from your personal layout. Never remove the Herdr app home itself.
 
-## How it reads
+## Optional: headless refresh helper (Linux hosts)
+
+Needed only on a Linux host that has no running Omarchy bar. Install it on that host, not on the viewer. It is opt-in in two separate steps and the viewer installer never runs it.
+
+**What it does.** `scripts/refresh.py` (Python 3.11+, standard library only) runs one pass and exits. For each provider on its allowlist it calls Omarchy's native collector (`$OMARCHY_PATH/bin/omarchy-agent-usage-<provider> --limits-only`, with `OMARCHY_PATH` defaulting to `/usr/share/omarchy`) and writes the result to the same record file the viewer reads. That call is a quota API read, not an LLM inference. It never runs Omarchy's updater, account-state or auto-switch tools, never switches accounts, and never creates or copies credentials: the native collector uses whatever Claude CLI or GitHub CLI login already exists on that host, and the helper never reads, stores or sends credentials.
+
+**Providers.** Claude and Copilot only, to start: the helper accepts just those two names and rejects anything else before making any call, and the unit names both. It does not query OpenAI or OpenRouter. Adding a provider is an explicit code change to that allowlist, because each one means a headless authenticated request. The viewer can still show other providers (for example Codex) whenever the existing collector has written a fresh record for them.
+
+**Schedule.** A systemd user timer starts a one-shot service 30 seconds after the timer starts and then 60 seconds after each run finishes, so runs never overlap (a lock also prevents it). A pass is bounded: each collector call is killed after 45 seconds and the service after 120.
+
+**Failure behaviour.** Before every provider call the helper durably records the next allowed attempt; if that cannot be written, it makes no call. After a failure that provider waits 60 seconds, then 120, 240, 480 and at most 900 seconds, independently of the other provider. A success resets the wait to 60 seconds. When a probe fails, times out or returns something invalid, the previous quota is kept with its original times but flagged stale, so the viewer shows it as unavailable with the old time explicit instead of presenting it as current. Each account's freshness is decided on its own.
+
+**Files it touches.** Its own copy at `~/.local/bin/herdr-fleet-quota-refresh`, two units in `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, the provider records it refreshes in `$XDG_STATE_HOME/omarchy/agents/usage/` (default `~/.local/state/…`), and its own control files (backoff state and lock) in `$XDG_STATE_HOME/herdr-fleet-quota/`. Everything is created private (mode 0600/0700); symbolic links and oversized files are refused.
+
+**Requirements.**
+
+- Linux with a systemd *user* manager running. Without linger the timer only runs while you have a session; enabling linger is your own decision and the installer never does it.
+- Omarchy's native collectors present (`OMARCHY_PATH`), and the provider tools logged in on that host.
+- When a login expires, the helper cannot fix it: a person has to log in again (Claude CLI for Claude, `gh` for Copilot). Until then the record stays stale and the viewer says so, with the older time. A failed or rate-limited probe leaves the record stale, never available.
+
+**Install** (explicit opt-in, then a separate step to start it):
+
+```sh
+bash scripts/install-refresh.sh              # read-only check; same as --check
+bash scripts/install-refresh.sh --install    # copy the helper and two units; starts nothing
+systemctl --user daemon-reload && systemctl --user enable --now herdr-fleet-quota-refresh.timer
+```
+
+or `bash scripts/install-refresh.sh --install --enable` to do the last step for you. `--enable` needs `--install`, and `--check` cannot be combined with either. When `systemd-analyze` exists the units are verified first and nothing is copied if that fails. Existing files that are identical are left alone; a differing file or a symbolic link is refused and nothing is changed. The installer does not restart any GUI, enable linger or make provider requests.
+
+**Disable and remove** — scoped to what it installed:
+
+```sh
+systemctl --user disable --now herdr-fleet-quota-refresh.timer
+```
+
+then delete only these three files and reload: `~/.local/bin/herdr-fleet-quota-refresh`, `~/.config/systemd/user/herdr-fleet-quota-refresh.service` and `~/.config/systemd/user/herdr-fleet-quota-refresh.timer` (use `$XDG_CONFIG_HOME` if you set it), then `systemctl --user daemon-reload`. Its control files in `$XDG_STATE_HOME/herdr-fleet-quota/` may be deleted once the timer is off. The provider records in the Omarchy usage folder are collector output: if nothing refreshes them any more they simply become stale and the viewer says so. There is no version manager or rollback: to update, disable the timer, review the differences, remove those three files and install again. Never delete a broader folder.
+
+**Verification status.** The helper has tests with fake collectors and synthetic fixtures (`tests/refresh.test.cjs`). It has not been run against a clean machine with real provider logins, so no out-of-the-box first reading is claimed.
+
+## How the viewer reads
 
 Every 60 seconds the mod asks Herdr for the machine list (`hc machine ls --json`), then runs one fixed shell script on each connected machine over Herdr's existing connection — no new ports, no provider network calls. The script reads at most 64 record files (256 KiB each) and prints only bounded quota fields: ids, timestamps, labels, used fractions, reset times, remaining balances and account labels. On each host it reads the Omarchy widget settings from the stock `omarchy.agents` entry when present, otherwise from the older `mateod.agents` entry; the same entry supplies the refresh interval and the disabled-provider list. Up to four hosts are read at once, each with an 8-second timeout.
 
-A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine and reads files under the Omarchy state and config folders. That is the whole of its access. Reads travel over Herdr's existing machine transport, which uses the network between Herdr and your hosts; nothing contacts a provider.
+A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine and reads files under the Omarchy state and config folders. That is the whole of its access. Reads travel over Herdr's existing machine transport, which uses the network between Herdr and your hosts; nothing in the viewer contacts a provider.
 
 ## Reading the numbers
 
-- Remaining capacity comes from the collector's used fraction and is only counted for a current reading. A stale, expired or incomplete reading is never presented as available capacity; the dialog says how old it is.
-- **Unknown is not zero.** A window whose reset has passed, or that has no percentage, is unknown.
-- A prepaid balance is shown as an amount. No percentage is inferred unless the record also states how much was funded.
+- Remaining capacity comes from the collector's used fraction, and only a current reading counts. A stale, expired, incomplete or not-ready reading is not available capacity; the dialog says why and how old it is.
+- **Unknown is not zero.** A window whose reset has passed, or that has no percentage, is unknown until a new reading arrives.
+- A prepaid balance is shown as an amount. No percentage is inferred unless the record also states how much was funded. An estimated value is labelled estimated and does not count as confirmed capacity.
 - Nothing is summed or deduplicated. The same provider on two machines, or two accounts, stay separate, because the mod cannot verify whether logins share one quota. Balances of different accounts are never added.
 
 ## Tests
 
-`npm test` runs the data, UI and installer tests with temporary fixtures: no provider calls, no collector records, no real Herdr app. The installer tests use a disposable `HOME` and `HERDR_APP_HOME` and a stub `herdr-app`, so the real CLI's behaviour is not exercised there; run the report and `herdr-app check` yourself for that. `npm run check` parses every mod JavaScript file and syntax-checks `scripts/install.sh`.
+`npm test` runs the data, UI, installer and refresh-helper tests with temporary fixtures: no provider calls, no real collector records, no real Herdr app and no systemd. The installer tests use a disposable `HOME` and `HERDR_APP_HOME` and a stub `herdr-app`, so the real CLI's behaviour is not exercised there; run the report and `herdr-app check` yourself for that. `npm run check` parses every mod JavaScript file, syntax-checks both installers and parses the Python helper without writing bytecode.
 
 ## License and publication
 
