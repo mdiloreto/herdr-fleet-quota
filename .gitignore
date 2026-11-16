@@ -1,0 +1,11 @@
+.worktrees/
+node_modules/
+.DS_Store
+
+# Herdr rewrites these beside the mod on every start.
+mods/*/jsconfig.json
+mods/*/*.d.ts
+
+*.tmp
+*.log
+herdr-shot*.png

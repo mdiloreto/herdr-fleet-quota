@@ -1,0 +1,15 @@
+{
+  "name": "herdr-fleet-quota",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "description": "Per-machine AI quota readings for Herdr, using existing local collector records.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "for f in mods/fleet-quota/*.js; do node --check \"$f\" || exit 1; done"
+  }
+}
