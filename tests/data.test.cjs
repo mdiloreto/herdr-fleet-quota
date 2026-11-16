@@ -758,6 +758,38 @@ test("native Claude and Copilot schema fixtures preserve fetch evidence and excl
   assert.equal(rows.some((row) => row.id === "empty"), false);
 });
 
+test("native root readiness does not hide a different account with remaining quota", async (t) => {
+  const { READ_SCRIPT, parseQuota, availabilityOf } = await modelPromise;
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-fleet-account-ready-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const usage = path.join(temp, "omarchy/agents/usage");
+  fs.mkdirSync(usage, { recursive: true });
+  fs.writeFileSync(path.join(usage, "claude.json"), JSON.stringify({
+    id: "claude", updatedAt: recent, ready: false, limits: [], limitsFetchedAt: 0,
+    accounts: [
+      { label: "Active", active: true, fetchedAt: 0, stale: false, limits: [] },
+      { label: "Other", active: false, fetchedAt: now - 1000, stale: false, limits: [{ percent: 0.2 }] },
+    ],
+  }));
+  fs.writeFileSync(path.join(usage, "copilot.json"), line("copilot", 0.2, { ready: false, limitsFetchedAt: now - 1000 }));
+  const output = execFileSync("sh", ["-c", READ_SCRIPT], {
+    env: { ...process.env, XDG_STATE_HOME: temp, XDG_CONFIG_HOME: path.join(temp, "config") }, encoding: "utf8",
+  });
+  const { rows } = parseQuota(output, now);
+  const active = rows.find((row) => row.accountLabel === "Active");
+  const other = rows.find((row) => row.accountLabel === "Other");
+  const root = rows.find((row) => row.id === "copilot");
+  assert.equal(availabilityOf(other, { hostStatus: "ok", now }).state, "available");
+  assert.equal(other.accountActive, false);
+  assert.equal(other.ready, null);
+  assert.equal(active.ready, null);
+  assert.equal(availabilityOf(active, { hostStatus: "ok", now }).state, "unknown");
+  assert.equal(root.ready, false);
+  assert.deepEqual(availabilityOf(root, { hostStatus: "ok", now }), {
+    state: "unknown", reason: "Provider is not ready",
+  });
+});
+
 test("the real reader preserves malformed constraints beside valid ones", async (t) => {
   const { READ_SCRIPT, parseQuota, availabilityOf } = await modelPromise;
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-fleet-unknown-"));

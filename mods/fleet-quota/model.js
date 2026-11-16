@@ -198,7 +198,7 @@ export function parseQuota(output, now = Date.now()) {
         accountActive: !!account && account.active === true,
         updatedAt: Number.isFinite(updated) ? updatedAt : "",
         freshUntil: Number.isFinite(updated) ? updated + maxAgeMs : null,
-        ready: typeof record.ready === "boolean" ? record.ready : null,
+        ready: !account && typeof record.ready === "boolean" ? record.ready : null,
         used: !incomplete && current.length ? Math.max(...current) : null,
         stale,
         incomplete,
