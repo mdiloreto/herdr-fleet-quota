@@ -4,7 +4,9 @@ A Herdr mod that tells you which AI providers still have capacity, across every 
 
 These are saved quota readings, not cost estimates and not a live meter. The mod reads the usage records the Omarchy agents collector writes on each measured host. It never calls a provider itself, never adds accounts or balances together, and never installs a collector. An optional, separate helper for headless Linux hosts (below) can keep those records fresh; it is not part of the viewer install.
 
-Status: private, unlicensed, pre-beta. This repository is the mod's development source. A separate personal configuration repository keeps a vendored copy for everyday use; that copy is updated by hand, in one direction, and no sync script ships here.
+![The fleet quota dialog: one card per machine, one row per provider, remaining quota per window](docs/preview.png)
+
+Status: MIT licensed, pre-beta. The preview above is a real capture with the LAN host address blurred out. This repository is the mod's development source; a separate personal configuration repository keeps a vendored copy for everyday use, updated by hand, in one direction. No sync script ships here.
 
 ## What it shows
 
@@ -46,7 +48,11 @@ An existing local GUI refresher and the headless helper may both call the native
 
 ## Install the viewer
 
+Clone or download this repository, then run the installer from the repository root:
+
 ```sh
+git clone https://github.com/mdiloreto/herdr-fleet-quota.git
+cd herdr-fleet-quota
 sh scripts/install.sh              # read-only report; same as --check or --dry-run
 sh scripts/install.sh --install    # copy the mod into the Herdr app home
 herdr-app do mod.open --name fleet-quota
@@ -152,7 +158,7 @@ systemctl --user disable --now herdr-fleet-quota-refresh.timer
 
 then delete only these three files and reload: `~/.local/bin/herdr-fleet-quota-refresh`, `~/.config/systemd/user/herdr-fleet-quota-refresh.service` and `~/.config/systemd/user/herdr-fleet-quota-refresh.timer` (use `$XDG_CONFIG_HOME` if you set it), then `systemctl --user daemon-reload`. Its control files in `$XDG_STATE_HOME/herdr-fleet-quota/` may be deleted once the timer is off. The provider records in the Omarchy usage folder are collector output: if nothing refreshes them any more they simply become stale and the viewer says so. There is no version manager or rollback: to update, disable the timer, review the differences, remove those three files and install again. Never delete a broader folder.
 
-**Verification status.** The helper has fake-collector and synthetic-fixture tests (`tests/refresh.test.cjs`) and has refreshed Claude and Copilot successfully on the existing Linux host without a desktop session. Those live readings were verified in the Mac viewer. A clean-machine run with newly established logins remains a separate beta requirement; existing-host success is not a claim that authentication is automatic.
+**Verification status.** The helper has fake-collector and synthetic-fixture tests (`tests/refresh.test.cjs`) and has refreshed Claude, Copilot and Codex successfully on the existing Linux host without a desktop session. Those live readings were verified in the Mac viewer. A clean-machine run with newly established logins remains a separate beta requirement; existing-host success is not a claim that authentication is automatic.
 
 ## How the viewer reads
 
@@ -173,7 +179,7 @@ A mod is trusted code in Herdr. This one runs `sh -c` on each measured machine a
 
 ## License and publication
 
-Private for now, and no license is granted for redistribution. Publishing later is the owner's decision, with a chosen license, a sanitized preview image and the `herdr-mod` repository topic. Nothing from Omarchy or any provider script is copied here.
+MIT. See [LICENSE](LICENSE). Nothing from Omarchy or any provider script is copied here: the mod reads the records Omarchy's own collectors write, and the helper calls those collectors through their published command line. The repository carries the `herdr-mod` topic, and the preview image is a real capture with the host address blurred.
 
 - Herdr guide: https://herdr.dev/guide
 - Herdr mods: https://herdr.dev/mods

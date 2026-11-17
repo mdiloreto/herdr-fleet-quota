@@ -1,10 +1,24 @@
 {
   "name": "herdr-fleet-quota",
   "version": "0.1.0",
-  "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "description": "Per-machine AI quota readings for Herdr, using existing local collector records.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mdiloreto/herdr-fleet-quota.git"
+  },
+  "homepage": "https://github.com/mdiloreto/herdr-fleet-quota#readme",
+  "bugs": {
+    "url": "https://github.com/mdiloreto/herdr-fleet-quota/issues"
+  },
+  "keywords": [
+    "herdr",
+    "omarchy",
+    "herdr-mod",
+    "quota",
+    "ai"
+  ],
   "engines": {
     "node": ">=22"
   },

@@ -2,7 +2,7 @@
 
 A Herdr mod that shows which AI providers still have capacity across every machine in your fleet: a compact badge of provider icons for a bar, and a dialog with the remaining capacity per machine, provider and account.
 
-> A sanitized preview image will be supplied before any public publication. This recipe deliberately does not link to a `preview.png` that does not exist yet.
+> The preview image is `docs/preview.png`: a real capture of this dialog with the LAN host address blurred out. No other workstation content is in it.
 
 ## What you see
 
