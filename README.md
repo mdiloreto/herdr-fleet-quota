@@ -105,7 +105,8 @@ For Claude accounts that expose only an enabled `extra_usage` monthly spending c
 **Providers.** Any provider Omarchy ships a collector for works — this is not a fixed set. Ask the machine what it actually has:
 
 ```sh
-~/.local/bin/herdr-fleet-quota-refresh --list
+~/.local/bin/herdr-fleet-quota-refresh --list   # once installed
+python3 scripts/refresh.py --list                # straight from a clone
 ```
 
 That prints one bare id per line for each `omarchy-agent-usage-<id>` collector installed on this host, and exits quietly when there is none; it writes nothing, takes no lock and calls no collector. At the time of writing a stock Omarchy install offers ids such as `claude`, `copilot`, `codex`, `gemini`, `cursor`, `opencode` and `openrouter`, but treat that as an example of the shape rather than a supported list — the install in front of you is the authority.
