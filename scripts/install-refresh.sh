@@ -137,8 +137,8 @@ elif [ ${#todo[@]} -gt 0 ]; then
   echo "dry run; pass --install to install"
 fi
 
-# Retained state is reported for --check and the default run only: nothing is
-# written, no collector is executed and no record is read.
+# What this host could refresh is reported for --check and the default run
+# only: nothing is written, no collector is executed and no record is read.
 if [ $do_install -eq 0 ]; then
   if [ $have_providers -eq 1 ]; then
     echo "providers: $list"
@@ -146,16 +146,16 @@ if [ $do_install -eq 0 ]; then
     echo "providers (repo unit): $(sed -n "s#^$exec_prefix ##p" "$src/systemd/$svc")"
   fi
   omarchy="${OMARCHY_PATH:-/usr/share/omarchy}"
-  existing=()
+  existing=""
   for c in "$omarchy"/bin/omarchy-agent-usage-*; do
     [ -e "$c" ] || continue
     id="${c##*/omarchy-agent-usage-}"
     # Not a provider: `update` is Omarchy's batch updater, so it is never listed.
     [ "$id" = update ] && continue
-    existing+=("$id")
+    existing="${existing:+$existing }$id"
   done
-  if [ ${#existing[@]} -gt 0 ]; then
-    echo "collectors: ${existing[*]}"
+  if [ -n "$existing" ]; then
+    echo "collectors: $existing"
   else
     echo "collectors: none of omarchy-agent-usage-* in $omarchy/bin"
   fi
