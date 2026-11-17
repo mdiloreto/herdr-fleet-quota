@@ -28,9 +28,9 @@ So a figure can be up to the collector period plus a minute old, and older still
 
 - Herdr desktop app on the machine where you look at it (Linux or macOS). The installer needs `sh` and the native `herdr-app` CLI.
 - Each **measured** host needs the Omarchy collector, `sh` and `jq`. A viewer-only machine (for example a Mac looking at Linux hosts through Herdr machines) needs no local Omarchy records, no local `jq` and no local collector; nothing is copied from the host to the viewer.
-- Source-verified against Omarchy 4.5.0-3 (pacman): it ships the stock `omarchy.agents` widget, which writes records to `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), and its refresher runs while that widget is enabled. The stock default configuration loads it. Collectors for Claude and Copilot exist upstream.
+- Source-verified against Omarchy 4.5.0-3 (pacman): it ships the stock `omarchy.agents` widget, which writes records to `$XDG_STATE_HOME/omarchy/agents/usage` (default `~/.local/state/omarchy/agents/usage`), and its refresher runs while that widget is enabled. The stock default configuration loads it. Omarchy ships one collector per agent, `$OMARCHY_PATH/bin/omarchy-agent-usage-<id>`; the host this was verified on has 23 of them, and `herdr-fleet-quota-refresh --list` reports the ones your own machine has.
 - You still have to be logged in to each provider's tool on the measured host. Having a provider's model or CLI installed does not prove it reports capacity.
-- Verified on an existing Omarchy 4.5.0-3 host with continuous Claude/Copilot quota reads and a Mac Herdr viewer, including Claude monthly-spend responses. The viewer installer also passed fresh and repeat installs in an isolated Mac app home using the real Herdr checker. Other versions, fresh-machine authentication and a clean-VM end-to-end run still need beta qualification.
+- Verified on an existing Omarchy 4.5.0-3 host with continuous Claude, Copilot and Codex quota reads and a Mac Herdr viewer, including Claude monthly-spend responses. The viewer installer also passed fresh and repeat installs in an isolated Mac app home using the real Herdr checker. Other versions, fresh-machine authentication and a clean-VM end-to-end run still need beta qualification.
 
 Upstream: https://github.com/omacom/omarchy
 
