@@ -499,13 +499,17 @@ export default class FleetQuota extends View {
     const amount = remaining === null ? null : balance
       ? remaining === 0 ? "0" : remaining < 0.01 ? "<0.01" : remaining.toFixed(2)
       : remaining > 0 && remaining < 1 ? "<1" : String(Math.round(remaining * 10) / 10);
-    const reading = remaining === null ? "Remaining unknown"
-      : `${amount}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
-    const exact = remaining === null ? "Remaining unknown, not zero"
+    // A stale window keeps its last saved value as history, never as a reading.
+    const saved = remaining === null ? "Remaining unknown, not zero"
       : `${remaining}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
+    const exact = stale ? `last saved: ${saved}` : saved;
+    const reading = stale ? "No live reading"
+      : remaining === null ? "Remaining unknown"
+      : `${amount}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
     const color = remaining === 0 ? t.working : providerColor(t, row?.id);
     const reason = reset === "passed" ? "Awaiting reading after reset" : w?.reason;
     const resetText = reset === "passed" ? "reset passed" : `resets ${reset}`;
+    const savedAt = stale ? stamp(t, row?.updatedAt, "saved", now) : null;
     return v_flex()
       .id(`fleet-window-${hostIndex}-${rowIndex}-${windowIndex}`)
       .gap(3).min_w(0)
@@ -513,7 +517,7 @@ export default class FleetQuota extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(12).tooltip(label).accessibility_label(label).child(label))
         .child(div().id(`fleet-window-pct-${hostIndex}-${rowIndex}-${windowIndex}`)
           .w(190).flex_none().truncate().tooltip(exact).accessibility_label(exact).text_right().text_size(12).font_semibold()
-          .text_color(remaining === null ? t.muted : color).child(reading)))
+          .text_color(stale || remaining === null ? t.muted : color).child(reading)))
       .child(h_flex().gap(10).items_center().min_w(0).when(!balance, (el) => el.child(
         h_flex()
           .id(`fleet-window-track-${hostIndex}-${rowIndex}-${windowIndex}`)
@@ -524,19 +528,21 @@ export default class FleetQuota extends View {
           .overflow_hidden()
           .bg(t.border)
           .role("progress_indicator")
-          .accessibility_label(`${label}: ${exact}${stale ? ", from an earlier reading" : ""}`)
-          .when(remaining !== null, (el) =>
+          .accessibility_label(stale ? `${label}: no live reading; ${exact}` : `${label}: ${exact}`)
+          .when(remaining !== null && !stale, (el) =>
             el.child(div()
               .id(`fleet-window-fill-${hostIndex}-${rowIndex}-${windowIndex}`)
               .h_full()
               .flex_none()
               .w(`${Math.min(100, remaining)}%`)
               .rounded(3)
-              .bg(color).opacity(stale ? 0.75 : 1))),
+              .bg(color))),
       ))
         .child(div().w(142).flex_none().text_right().text_size(10).text_color(t.muted)
-          .tooltip(balance ? "Prepaid balance · no reset window" : resetAt ? resetAt.toLocaleString() : "Reset time unknown")
-          .child(balance ? "prepaid balance" : resetText)))
+          .tooltip(stale ? "Last saved reading · the reset time is from the record, not a live read"
+            : balance ? "Prepaid balance · no reset window" : resetAt ? resetAt.toLocaleString() : "Reset time unknown")
+          .when(stale, (el) => el.child(savedAt ?? div().text_size(10).child("saved time unknown")))
+          .when(!stale, (el) => el.child(balance ? "prepaid balance" : resetText))))
       .when(Boolean(reason), (el) => el.child(div().text_size(11).text_color(t.muted).child(reason)));
   }
 }

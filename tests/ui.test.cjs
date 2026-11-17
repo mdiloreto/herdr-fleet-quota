@@ -279,12 +279,35 @@ test("old records retain provider identity and long source labels remain accessi
   assert.ok(visible(panel).includes("old"));
   assert.ok(visible(panel).includes("not active on host"));
   assert.equal(byId(panel, "fleet-provider-0-0").props.border_color, COLORS.ansi3);
-  assert.equal(byId(panel, "fleet-window-fill-0-0-0").props.bg, COLORS.ansi3);
-  assert.ok(byId(panel, "fleet-window-fill-0-0-0").props.opacity < 1);
+  assert.equal(byId(panel, "fleet-window-fill-0-0-0"), undefined, "a stale window has no filled meter");
+  assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "a stale window shows no percentage");
+  assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("No live reading"));
+  assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("saved just now"));
   for (const full of [name, row.accountLabel, row.windows[0].label]) {
     assert.ok(nodes(panel).some((node) => node.props.tooltip === full && node.props.accessibility_label === full));
   }
   assert.ok(nodes(panel).some((node) => node.props.tooltip === new Date(now).toLocaleString()));
+});
+
+test("a stale window reads as saved history while a fresh window keeps its percentage", () => {
+  const now = Date.now();
+  const mod = loaded([
+    host("old", [{ id: "claude", limitsStale: true, limits: [{ label: "Week", percent: 0 }] }], now),
+    host("live", [{ id: "codex", limits: [{ label: "Month", percent: 0.4 }] }], now),
+  ]);
+  const panel = mod.panel(COLORS);
+  const stale = byId(panel, "fleet-window-pct-0-0-0");
+  assert.deepEqual(stale.text, ["No live reading"]);
+  assert.ok(!stale.text.some((text) => text.includes("% remaining")));
+  assert.equal(stale.props.text_color, COLORS.muted);
+  assert.equal(stale.props.tooltip, "last saved: 100% remaining");
+  assert.equal(stale.props.accessibility_label, "last saved: 100% remaining");
+  assert.equal(byId(panel, "fleet-window-fill-0-0-0"), undefined, "an empty track never looks full");
+  assert.ok(byId(panel, "fleet-window-track-0-0-0"), "the track itself stays visible");
+  assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("saved just now"));
+  const fresh = byId(panel, "fleet-window-pct-1-0-0");
+  assert.deepEqual(fresh.text, ["60% remaining"]);
+  assert.equal(byId(panel, "fleet-window-fill-1-0-0").props.w, "60%");
 });
 
 test("refresh failure retains detail but invalidates positive availability", async () => {
@@ -302,7 +325,8 @@ test("refresh failure retains detail but invalidates positive availability", asy
   const panel = mod.panel(COLORS);
   assert.ok(visible(panel).includes("Couldn't read the fleet."));
   assert.ok(visible(panel).includes("Quota read failed"));
-  assert.ok(visible(panel).includes("60% remaining"));
+  assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "a failed read cannot report a live percentage");
+  assert.ok(visible(panel).includes("No live reading"));
   globalThis.__fleet = async () => ({ hosts, discoveryError: true });
   mod.refresh(cx);
   await flush(cx);
@@ -334,7 +358,9 @@ test("minute timer invalidates expired data even while a read hangs without stac
     assert.equal(reads, 1);
     assert.equal(cx.tasks.length, 0);
     assert.deepEqual(barIds(mod), []);
-    assert.ok(visible(mod.panel(COLORS)).includes("Saved quota reading is stale"));
+    const panel = mod.panel(COLORS);
+    assert.ok(visible(panel).includes("Saved quota reading is stale"));
+    assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "an expired reading is not a live percentage");
   } finally { Date.now = originalNow; }
 });
 
