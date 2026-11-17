@@ -118,6 +118,20 @@ function loaded(hosts) {
   mod.refreshedAt = Date.now();
   return mod;
 }
+// A row with an exact used percent, for values the parser's float math cannot hit exactly.
+function exactRow(id, remainingPercent, window = {}) {
+  const now = Date.now();
+  return {
+    id, accountLabel: "", accountActive: false, updatedAt: new Date(now).toISOString(),
+    freshUntil: now + 3600000, ready: null, used: Math.round(100 - remainingPercent),
+    stale: false, incomplete: false,
+    windows: [{ label: "Week", used: Math.round(100 - remainingPercent), capacity: "available",
+      remainingPercent, estimated: false, reason: "", resetsAt: "", ...window }],
+  };
+}
+function exactHost(...rows) {
+  return { name: null, label: "This computer", status: "ok", errors: 0, lastSuccessAt: Date.now(), rows };
+}
 function barIds(mod) {
   return nodes(mod.bar(COLORS)).filter((node) => node.id?.startsWith("fleet-bar-provider-")).map((node) => node.id.slice(19));
 }
@@ -132,26 +146,29 @@ test("checking guard renders honest empty states without reads or timers", () =>
   assert.deepEqual(calls.exec, []);
   assert.deepEqual(calls.fleet, []);
   assert.ok(visible(mod.bar(COLORS)).includes("Checking…"));
-  assert.ok(visible(mod.panel(COLORS)).includes("Reported quota remaining"));
+  assert.ok(visible(mod.panel(COLORS)).includes("Reported quota"));
   mod.refreshedAt = Date.now();
   assert.ok(visible(mod.bar(COLORS)).includes("Unverified"));
   assert.ok(!texts(mod.bar(COLORS)).some((text) => text.includes("no providers available")));
 });
 
-test("bar contains only qualifying provider icons, not highest consumption or warnings", () => {
+test("bar shows one qualifying provider icon and the honest percentage used", () => {
   const mod = loaded([host(null, [
-    { id: "claude", limits: [{ percent: 0.4 }] },
+    { id: "claude", limits: [{ label: "Week", percent: 0.4 }] },
     { id: "copilot", limits: [{ percent: 0.996 }] },
     { id: "codex", limits: [{ percent: 1 }] },
     { id: "openrouter", limits: [{ percent: 0.99 }], limitsStale: true },
   ])]);
-  assert.deepEqual(barIds(mod), ["claude", "copilot"]);
+  assert.deepEqual(barIds(mod), ["copilot"], "only the tightest available provider is in the badge");
   const bar = mod.bar(COLORS);
   assert.equal(byId(bar, "fleet-quota-bar").props.w, 118);
-  assert.ok(!visible(bar).some((text) => /%|!|~|AI/.test(text)));
+  assert.equal(byId(bar, "fleet-bar-used").text[0], "99.6%", "a window with capacity left is never 100%");
+  assert.ok(!visible(bar).some((text) => /!|~|AI/.test(text)));
   assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /Claude.*This computer/);
-  assert.ok(!visible(mod.panel(COLORS)).some((text) => /used|HIGHEST|MACHINES WITH READINGS/.test(text)));
-  assert.ok(visible(mod.panel(COLORS)).includes("<1% remaining"), "rounding to 100 used cannot erase positive capacity");
+  const panel = mod.panel(COLORS);
+  assert.equal(byId(panel, "fleet-window-pct-0-1-0").text[0], "99.6% used", "rounding to 100 used cannot erase positive capacity");
+  assert.equal(byId(panel, "fleet-window-pct-0-0-0").text[0], "100% used", "only a window that is actually spent reads full");
+  assert.equal(byId(panel, "fleet-window-pct-0-3-0").text[0], "40% used");
 });
 
 test("a provider this build has never heard of renders as its own id with the generic glyph", () => {
@@ -161,7 +178,7 @@ test("a provider this build has never heard of renders as its own id with the ge
   assert.equal(chip.children[0].node.props.path, "mods/fleet-quota/icons/provider.svg", "no mapping keeps the generic outline");
   const text = visible(mod.panel(COLORS));
   assert.ok(text.includes("mistral"), "the raw id stands in for the name");
-  assert.ok(text.includes("75% remaining"));
+  assert.ok(text.includes("25% used"));
 });
 
 test("authoritative availability excludes stale, offline, failed, incomplete and mixed exhausted rows", () => {
@@ -193,15 +210,31 @@ test("same provider shares one chip but retains independent host/account evidenc
   const groups = mod.availableProviders(now);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].readings.length, 2);
+  assert.equal(Math.round(groups[0].used), 60, "the group reports the window that runs out first");
+  assert.equal(groups[0].label, "Limit");
   assert.deepEqual(barIds(mod), ["claude"]);
   const label = byId(mod.bar(COLORS), "fleet-quota-bar").props.tooltip;
   assert.match(label, /alpha · Work \(active on host\)/);
   assert.match(label, /beta · Personal \(not active on host\)/);
   const panel = mod.panel(COLORS);
-  assert.ok(visible(byId(panel, "fleet-provider-0-0")).includes("80% remaining"));
-  assert.ok(visible(byId(panel, "fleet-provider-1-0")).includes("40% remaining"));
+  assert.ok(visible(byId(panel, "fleet-provider-0-0")).includes("20% used"));
+  assert.ok(visible(byId(panel, "fleet-provider-1-0")).includes("60% used"));
   assert.ok(visible(byId(panel, "fleet-provider-1-0")).includes("not active on host"));
   assert.equal(nodes(panel).filter((node) => node.id === "fleet-available-claude").length, 1);
+});
+
+test("a group keeps the credits of the reading that decides, else the first reading with a balance", () => {
+  const accounts = (workBalance) => host(null, [{ id: "claude", accounts: [
+    { label: "Work", active: true, fetchedAt: Date.now(), limits: [{ label: "Week", percent: 0.8 }],
+      balance: workBalance ? { remaining: 5, currency: "USD" } : null },
+    { label: "Personal", fetchedAt: Date.now(), limits: [{ label: "Week", percent: 0.2 }], balance: { remaining: 12, currency: "USD" } },
+  ] }]);
+  const fallback = loaded([accounts(false)]).availableProviders(Date.now())[0];
+  assert.equal(Math.round(fallback.used), 80);
+  assert.equal(fallback.remaining, 12, "the deciding reading has no balance, so the first one with credits stands");
+  assert.equal(fallback.currency, "USD");
+  const own = loaded([accounts(true)]).availableProviders(Date.now())[0];
+  assert.equal(own.remaining, 5, "the deciding reading's own credits, not the first found");
 });
 
 test("positive unmetered balances qualify without an allowlist; tiny, zero and estimated values are honest", () => {
@@ -211,7 +244,7 @@ test("positive unmetered balances qualify without an allowlist; tiny, zero and e
     { id: "zero", balance: { remaining: 0, currency: "USD" } },
     { id: "estimated", balance: { remaining: 2, estimated: true, currency: "USD" } },
   ])]);
-  assert.deepEqual(barIds(mod), ["fireworks", "openrouter"]);
+  assert.deepEqual(barIds(mod), ["fireworks"], "no percentage: the badge falls back to the first provider with credits");
   const panel = mod.panel(COLORS), text = visible(panel);
   assert.ok(text.includes("<0.01 USD remaining"));
   assert.ok(text.includes("30.00 USD remaining"), "not clamped to funded");
@@ -222,18 +255,16 @@ test("positive unmetered balances qualify without an allowlist; tiny, zero and e
   assert.ok(!nodes(panel).some((node) => node.id?.startsWith("fleet-window-fill-")), "balances have no invented percentage track");
 });
 
-test("bar overflow is bounded, unknown provider ids are safe and all evidence remains accessible", () => {
+test("bar keeps one number, counts the other providers, and unknown ids stay safe and accessible", () => {
   for (const count of [3, 4, 105]) {
     const ids = Array.from({ length: count }, (_, i) => `provider-${i}`);
     const mod = loaded(ids.map((id) => host(id, [{ id, limits: [{ percent: 0 }] }])));
     const bar = mod.bar(COLORS);
-    assert.equal(barIds(mod).length, count === 3 ? 3 : 2);
+    assert.equal(barIds(mod).length, 1, "the badge holds one decisive provider");
     assert.equal(byId(bar, "fleet-quota-bar").props.w, 118);
-    if (count > 3) {
-      const extra = byId(bar, "fleet-bar-more");
-      assert.equal(extra.props.w, 26);
-      assert.deepEqual(extra.text, [count > 101 ? "+99+" : `+${count - 2}`]);
-    }
+    const extra = byId(bar, "fleet-bar-more");
+    assert.equal(extra.props.w, 26);
+    assert.deepEqual(extra.text, [count - 1 > 99 ? "+99+" : `+${count - 1}`]);
     for (const id of ids) assert.ok(byId(bar, "fleet-quota-bar").props.tooltip.includes(id));
     const overview = byId(mod.panel(COLORS), "fleet-overview");
     assert.ok(nodes(overview).filter((node) => node.id?.startsWith("fleet-available-")).length <= 6);
@@ -245,22 +276,114 @@ test("bar overflow is bounded, unknown provider ids are safe and all evidence re
   assert.match(byId(mod.bar(COLORS), "fleet-quota-bar").props.tooltip, /constructor/);
 });
 
-test("remaining meters preserve zero and unknown, keep colors and do not round away tiny capacity", () => {
+test("used meters preserve zero and unknown, keep colors and do not round away tiny capacity", () => {
   const mod = loaded([host(null, [
     { id: "claude", limits: [{ label: "Unused", percent: 0 }, { label: "Tiny", percent: 0.996 },
       { label: "Empty", percent: 1 }, { label: "Unknown", percent: null }] },
   ])]);
   for (const theme of [COLORS, { ...COLORS, canvas: "#fff", ansi3: "#885000" }]) {
     const panel = mod.panel(theme);
-    assert.equal(byId(panel, "fleet-window-fill-0-0-0").props.w, "100%");
+    assert.equal(byId(panel, "fleet-window-fill-0-0-0").props.w, "0%", "an unused window is empty");
+    assert.equal(byId(panel, "fleet-window-pct-0-0-0").text[0], "0% used");
     const tiny = byId(panel, "fleet-window-fill-0-0-1");
-    assert.ok(parseFloat(tiny.props.w) > 0 && parseFloat(tiny.props.w) < 1);
+    assert.ok(parseFloat(tiny.props.w) > 99 && parseFloat(tiny.props.w) < 100);
+    assert.equal(byId(panel, "fleet-window-pct-0-0-1").text[0], "99.6% used");
     assert.equal(tiny.props.bg, theme.ansi3);
-    assert.equal(byId(panel, "fleet-window-fill-0-0-2").props.w, "0%");
+    assert.equal(byId(panel, "fleet-window-fill-0-0-2").props.w, "100%");
+    assert.equal(byId(panel, "fleet-window-pct-0-0-2").text[0], "100% used");
     assert.equal(byId(panel, "fleet-window-fill-0-0-3"), undefined);
     assert.ok(visible(panel).includes("Remaining unknown"));
     assert.equal(byId(panel, "fleet-provider-0-0").props.border_color, theme.ansi3);
   }
+});
+
+test("bar shows the decisive provider's icon and its percent of quota used", () => {
+  const mod = loaded([host(null, [{ id: "claude", limits: [{ label: "Weekly", percent: 0.74 }] }])]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), ["claude"]);
+  assert.equal(byId(bar, "fleet-bar-provider-claude").children[0].node.props.path, "icons/claude.svg");
+  assert.equal(byId(bar, "fleet-bar-used").text[0], "74%");
+  assert.equal(byId(bar, "fleet-bar-credits"), undefined);
+  assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /^Quota used: 74% of Claude · Weekly\. /);
+  assert.match(byId(bar, "fleet-quota-bar").props.accessibility_label, /^Quota used: 74% of Claude · Weekly\. /);
+});
+
+test("the decisive number is the provider closest to exhaustion, not the first by id", () => {
+  const mod = loaded([host(null, [
+    { id: "claude", limits: [{ label: "Week", percent: 0.26 }] },
+    { id: "codex", limits: [{ label: "Month", percent: 0.74 }] },
+  ])]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), ["codex"], "claude sorts first but has more headroom");
+  assert.equal(byId(bar, "fleet-bar-used").text[0], "74%");
+  assert.equal(byId(bar, "fleet-bar-more").text[0], "+1");
+  assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /Quota used: 74% of Codex · Month\./);
+  assert.match(byId(bar, "fleet-bar-more").props.tooltip, /Claude: 26% used/, "the pill explains the providers it counts");
+});
+
+test("bar shows remaining credits when no available provider reports a percentage", () => {
+  const mod = loaded([host(null, [{ id: "fireworks", balance: { remaining: 30, currency: "USD" } }])]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), ["fireworks"]);
+  assert.equal(byId(bar, "fleet-bar-used"), undefined);
+  assert.equal(byId(bar, "fleet-bar-credits").text[0], "30.00 USD");
+  assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /^Credits remaining: 30\.00 USD on Fireworks\. /);
+});
+
+test("bar keeps its honest empty state when nothing is available", () => {
+  const mod = loaded([{ ...host("remote", [{ id: "claude", limits: [{ percent: 0.2 }] }]), status: "offline" }]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), []);
+  assert.ok(visible(bar).includes("Unverified"));
+  assert.equal(byId(bar, "fleet-bar-used"), undefined);
+  assert.equal(byId(bar, "fleet-bar-credits"), undefined);
+  assert.equal(byId(bar, "fleet-bar-more"), undefined);
+  assert.ok(byId(bar, "fleet-quota-bar").props.tooltip.includes("No provider has confirmed remaining quota in fresh readings"));
+  const untouched = new Mod();
+  untouched.init({}, makeCx());
+  assert.ok(visible(untouched.bar(COLORS)).includes("Checking…"));
+});
+
+test("bar shows no second number beside the other available providers", () => {
+  const mod = loaded([host(null, [
+    { id: "claude", limits: [{ percent: 0.26 }] },
+    { id: "codex", limits: [{ percent: 0.5 }] },
+    { id: "copilot", limits: [{ percent: 0.9 }] },
+  ])]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), ["copilot"]);
+  assert.deepEqual(visible(bar).filter((text) => /\d/.test(text)), ["90%", "+2"],
+    "one number, then a count of the other providers");
+  assert.equal(nodes(bar).filter((node) => node.id?.startsWith("fleet-bar-provider-")).length, 1);
+});
+
+test("a window with capacity left never reads as fully used, and tiny use reads as <1", () => {
+  const mod = loaded([exactHost(exactRow("claude", 0.5), exactRow("codex", 99.6))]);
+  const panel = mod.panel(COLORS);
+  assert.equal(byId(panel, "fleet-window-pct-0-0-0").text[0], "99.5% used");
+  assert.equal(byId(panel, "fleet-window-fill-0-0-0").props.w, "99.5%");
+  assert.equal(byId(panel, "fleet-window-pct-0-1-0").text[0], "<1% used");
+  const tiny = parseFloat(byId(panel, "fleet-window-fill-0-1-0").props.w);
+  assert.ok(tiny > 0 && tiny < 1, "the meter keeps the tiny use it reports");
+  assert.equal(byId(mod.bar(COLORS), "fleet-bar-used").text[0], "99.5%", "the badge keeps the exact value too");
+});
+
+test("the meter fills to the exact used percent and labels it", () => {
+  const mod = loaded([exactHost(exactRow("claude", 26))]);
+  const panel = mod.panel(COLORS);
+  assert.equal(byId(panel, "fleet-window-fill-0-0-0").props.w, "74%");
+  assert.equal(byId(panel, "fleet-window-pct-0-0-0").text[0], "74% used");
+  assert.equal(byId(panel, "fleet-window-track-0-0-0").props.accessibility_label, "Week: 74% of the quota used");
+});
+
+test("overview chips show each provider's own used percentage", () => {
+  const mod = loaded([host(null, [
+    { id: "claude", limits: [{ label: "Week", percent: 0.74 }] },
+    { id: "codex", balance: { remaining: 30, currency: "USD" } },
+  ])]);
+  const overview = byId(mod.panel(COLORS), "fleet-overview");
+  assert.deepEqual(visible(byId(overview, "fleet-available-claude")), ["Claude 74%"]);
+  assert.deepEqual(visible(byId(overview, "fleet-available-codex")), ["Codex"], "no percentage, so only the name");
 });
 
 test("local no-data is compact information, while host omissions and failures remain visible locally", () => {
@@ -290,7 +413,7 @@ test("old records retain provider identity and long source labels remain accessi
   assert.ok(visible(panel).includes("not active on host"));
   assert.equal(byId(panel, "fleet-provider-0-0").props.border_color, COLORS.ansi3);
   assert.equal(byId(panel, "fleet-window-fill-0-0-0"), undefined, "a stale window has no filled meter");
-  assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "a stale window shows no percentage");
+  assert.ok(!visible(panel).some((text) => text.includes("% used")), "a stale window shows no percentage");
   assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("No live reading"));
   assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("saved just now"));
   for (const full of [name, row.accountLabel, row.windows[0].label]) {
@@ -308,16 +431,16 @@ test("a stale window reads as saved history while a fresh window keeps its perce
   const panel = mod.panel(COLORS);
   const stale = byId(panel, "fleet-window-pct-0-0-0");
   assert.deepEqual(stale.text, ["No live reading"]);
-  assert.ok(!stale.text.some((text) => text.includes("% remaining")));
+  assert.ok(!stale.text.some((text) => text.includes("% used")));
   assert.equal(stale.props.text_color, COLORS.muted);
-  assert.equal(stale.props.tooltip, "last saved: 100% remaining");
-  assert.equal(stale.props.accessibility_label, "last saved: 100% remaining");
+  assert.equal(stale.props.tooltip, "last saved: 0% used");
+  assert.equal(stale.props.accessibility_label, "last saved: 0% used");
   assert.equal(byId(panel, "fleet-window-fill-0-0-0"), undefined, "an empty track never looks full");
   assert.ok(byId(panel, "fleet-window-track-0-0-0"), "the track itself stays visible");
   assert.ok(visible(byId(panel, "fleet-window-0-0-0")).includes("saved just now"));
   const fresh = byId(panel, "fleet-window-pct-1-0-0");
-  assert.deepEqual(fresh.text, ["60% remaining"]);
-  assert.equal(byId(panel, "fleet-window-fill-1-0-0").props.w, "60%");
+  assert.deepEqual(fresh.text, ["40% used"]);
+  assert.equal(byId(panel, "fleet-window-fill-1-0-0").props.w, "40%");
 });
 
 test("refresh failure retains detail but invalidates positive availability", async () => {
@@ -335,7 +458,7 @@ test("refresh failure retains detail but invalidates positive availability", asy
   const panel = mod.panel(COLORS);
   assert.ok(visible(panel).includes("Couldn't read the fleet."));
   assert.ok(visible(panel).includes("Quota read failed"));
-  assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "a failed read cannot report a live percentage");
+  assert.ok(!visible(panel).some((text) => text.includes("% used")), "a failed read cannot report a live percentage");
   assert.ok(visible(panel).includes("No live reading"));
   globalThis.__fleet = async () => ({ hosts, discoveryError: true });
   mod.refresh(cx);
@@ -370,7 +493,7 @@ test("minute timer invalidates expired data even while a read hangs without stac
     assert.deepEqual(barIds(mod), []);
     const panel = mod.panel(COLORS);
     assert.ok(visible(panel).includes("Saved quota reading is stale"));
-    assert.ok(!visible(panel).some((text) => text.includes("% remaining")), "an expired reading is not a live percentage");
+    assert.ok(!visible(panel).some((text) => text.includes("% used")), "an expired reading is not a live percentage");
   } finally { Date.now = originalNow; }
 });
 
@@ -450,7 +573,7 @@ test("real UI/backend integration keeps account freshness and remaining units", 
   assert.equal(groups[0].readings.length, 1);
   assert.equal(groups[0].readings[0].row.accountLabel, "Work");
   const panel = mod.panel(COLORS);
-  assert.ok(visible(panel).includes("<1% remaining"));
+  assert.ok(visible(panel).includes("99.6% used"));
   assert.ok(visible(panel).includes("Quota reading time unknown"));
   assert.ok(visible(panel).includes("offline"));
 });
