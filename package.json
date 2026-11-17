@@ -1,0 +1,29 @@
+{
+  "name": "herdr-fleet-quota",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "description": "Per-machine AI quota readings for Herdr, using existing local collector records.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mdiloreto/herdr-fleet-quota.git"
+  },
+  "homepage": "https://github.com/mdiloreto/herdr-fleet-quota#readme",
+  "bugs": {
+    "url": "https://github.com/mdiloreto/herdr-fleet-quota/issues"
+  },
+  "keywords": [
+    "herdr",
+    "omarchy",
+    "herdr-mod",
+    "quota",
+    "ai"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "for f in mods/fleet-quota/*.js; do node --check \"$f\" || exit 1; done && sh -n scripts/install.sh && bash -n scripts/install-refresh.sh && python3 -B -c 'import ast,sys; [ast.parse(open(p).read(), p) for p in sys.argv[1:]]' scripts/refresh.py"
+  }
+}

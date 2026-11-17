@@ -1,0 +1,13 @@
+{
+  "id": "fleet-quota",
+  "type": "block",
+  "content": {
+    "mod": "fleet-quota",
+    "props": {
+      "part": "bar"
+    }
+  },
+  "size": {
+    "px": 118
+  }
+}
