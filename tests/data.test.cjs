@@ -813,6 +813,85 @@ test("the real reader preserves malformed constraints beside valid ones", async 
   for (const row of rows) assert.equal(availabilityOf(row, { hostStatus: "ok", now }).state, "unknown", row.id);
 });
 
+test("decisive usage reports the window that runs out first", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const row = parseQuota(line("claude", 0, { limits: [
+    { label: "Session", percent: 0.25 },
+    { label: "Weekly", percent: 0.8 },
+    { label: "Monthly", percent: 0.4 },
+  ] }), now).rows[0];
+  assert.deepEqual(decisiveUsage(row), { used: 80, label: "Weekly", remaining: null, currency: "" });
+  const tied = parseQuota(line("codex", 0, { limits: [
+    { label: "Session", percent: 0.6 },
+    { label: "Weekly", percent: 0.6 },
+  ] }), now).rows[0];
+  assert.deepEqual(decisiveUsage(tied), { used: 60, label: "Session", remaining: null, currency: "" });
+});
+
+test("decisive usage keeps the balance amount beside the decisive percent", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const row = parseQuota(line("mixed", 0, {
+    limits: [{ label: "Session", percent: 0.4 }], balance: { remaining: 9, funded: 10, currency: "USD" },
+  }), now).rows[0];
+  assert.deepEqual(decisiveUsage(row), { used: 40, label: "Session", remaining: 9, currency: "USD" });
+});
+
+test("decisive usage keeps sub-integer headroom instead of rounding to fully used", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const row = parseQuota(line("claude", 0, { limits: [
+    { label: "Session", percent: 0.9 },
+    { label: "Weekly", percent: 0.995 },
+  ] }), now).rows[0];
+  assert.equal(row.windows[1].used, 100, "the window percentage stays a rounded integer");
+  assert.equal(row.used, 100, "the legacy row percentage stays a rounded integer");
+  assert.deepEqual(decisiveUsage(row), { used: 99.5, label: "Weekly", remaining: null, currency: "" });
+});
+
+test("decisive usage falls back to the metered balance percentage", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const row = parseQuota(line("metered", 0, {
+    limits: [], balance: { remaining: 5, funded: 20, currency: "USD" },
+  }), now).rows[0];
+  assert.equal(row.windows[0].remainingPercent, undefined);
+  assert.deepEqual(decisiveUsage(row), { used: 75, label: "Balance 5.00 USD", remaining: 5, currency: "USD" });
+});
+
+test("decisive usage claims no percentage when every window is unknown", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const unfunded = parseQuota(line("unfunded", 0, { limits: [], balance: { remaining: 25, currency: "USD" } }), now).rows[0];
+  assert.equal(unfunded.windows[0].used, null);
+  assert.deepEqual(decisiveUsage(unfunded), { used: null, label: "", remaining: 25, currency: "USD" });
+  const unknown = parseQuota(line("missing", 0, { limits: [{ label: "Weekly" }, { percent: null }] }), now).rows[0];
+  assert.deepEqual(decisiveUsage(unknown), { used: null, label: "", remaining: null, currency: "" });
+});
+
+test("decisive usage never throws on malformed rows and windows", async () => {
+  const { decisiveUsage } = await modelPromise;
+  const empty = { used: null, label: "", remaining: null, currency: "" };
+  for (const row of [
+    null, undefined, {}, { windows: null }, { windows: "nope" }, { windows: {} },
+    { windows: [null, "x", [], { used: "40" }, { used: null }, { used: NaN }, { used: Infinity },
+      { used: -1 }, { used: 101 }, { remaining: -5 }, { remaining: "5" }, { remaining: null }] },
+  ]) assert.deepEqual(decisiveUsage(row), empty, JSON.stringify(row));
+  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remaining: -1 }] }), {
+    used: 40, label: "Session", remaining: null, currency: "",
+  });
+  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remainingPercent: 101 }] }), {
+    used: 40, label: "Session", remaining: null, currency: "",
+  });
+});
+
+test("decisive usage leaves the row it is given untouched", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const row = parseQuota(line("claude", 0, {
+    limits: [{ label: "Session", percent: 0.2 }, { label: "Weekly", percent: 0.7 }],
+    balance: { remaining: 5, funded: 20, currency: "USD" },
+  }), now).rows[0];
+  const before = JSON.stringify(row);
+  decisiveUsage(row);
+  assert.equal(JSON.stringify(row), before);
+});
+
 test("cached capacity never qualifies after a failed read and reset invalidation preserves the old snapshot", async () => {
   const { collectFleet } = await fleetPromise;
   const { availabilityOf } = await modelPromise;
