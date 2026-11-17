@@ -154,6 +154,16 @@ test("bar contains only qualifying provider icons, not highest consumption or wa
   assert.ok(visible(mod.panel(COLORS)).includes("<1% remaining"), "rounding to 100 used cannot erase positive capacity");
 });
 
+test("a provider this build has never heard of renders as its own id with the generic glyph", () => {
+  const mod = loaded([host(null, [{ id: "mistral", limits: [{ label: "Week", percent: 0.25 }] }])]);
+  assert.deepEqual(barIds(mod), ["mistral"]);
+  const chip = byId(mod.bar(COLORS), "fleet-bar-provider-mistral");
+  assert.equal(chip.children[0].node.props.path, "mods/fleet-quota/icons/provider.svg", "no mapping keeps the generic outline");
+  const text = visible(mod.panel(COLORS));
+  assert.ok(text.includes("mistral"), "the raw id stands in for the name");
+  assert.ok(text.includes("75% remaining"));
+});
+
 test("authoritative availability excludes stale, offline, failed, incomplete and mixed exhausted rows", () => {
   const now = Date.now();
   const hosts = [
