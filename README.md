@@ -10,6 +10,7 @@ Status: private, unlicensed, pre-beta. This repository is the mod's development 
 
 - **Top-bar badge** (118 px, optional): icons of the providers that currently have confirmed remaining capacity — up to three, or two plus a `+N` count when there are more. Hovering names each provider and the machine and account behind it, with the record time. There is no percentage and no warning mark. With nothing to show it says *Checking…* while the first read runs and *Unverified* afterwards; neither means zero or exhausted. Clicking opens the dialog.
 - **Dialog** (620×560, "Reported quota remaining"): the available providers, then one card per machine and, inside it, one card per provider or account. Each shows how much remains in every quota window (`N% remaining`) or the prepaid balance as an amount, the exact reset time on hover, the age of the record, and a reason when it is not available (for example machine offline, read failed, provider not ready, reading stale, windows omitted, awaiting a reading after a reset). There is no fleet-wide "highest used" or "incomplete" headline.
+- The viewer names the providers it knows; a provider it does not name is shown by its own id with the generic outline glyph and the accent colour, so no new provider needs a matching entry in the mod to appear.
 - A provider counts as available only from a current, complete reading with capacity left in every window. An exhausted window, a stale or future-dated reading, an estimated value or an unknown percentage is never shown as available capacity, and unknown is never shown as zero.
 - Every machine and every account is judged on its own. Which account is active on a host does not make another account's reading current, and nothing is added up.
 
@@ -95,15 +96,23 @@ Then delete the `fleet-quota` block from your personal layout. Never remove the 
 
 Needed only on a Linux host that has no running Omarchy bar. Install it on that host, not on the viewer. It is opt-in in two separate steps and the viewer installer never runs it.
 
-**What it does.** `scripts/refresh.py` (Python 3.11+, standard library only) runs one pass and exits. Copilot and Codex use the native `omarchy-agent-usage-copilot --limits-only` and `omarchy-agent-usage-codex --limits-only` commands. Claude uses an isolated Python adapter around the native collection entrypoint that skips local conversation statistics: the native `--limits-only` flag alone can still perform a full history scan on a cold cache. The adapter marks its output `hasLocalStats: false`, checks the expected native interface, and fails closed if that interface changes. None of these paths modifies Omarchy's installed files.
+**What it does.** `scripts/refresh.py` (Python 3.11+, standard library only) runs one pass and exits. Every non-Claude provider uses its own native collector, `omarchy-agent-usage-<id> --limits-only`. Claude uses an isolated Python adapter around the native collection entrypoint that skips local conversation statistics: the native `--limits-only` flag alone can still perform a full history scan on a cold cache. The adapter marks its output `hasLocalStats: false`, checks the expected native interface, and fails closed if that interface changes. None of these paths modifies Omarchy's installed files.
 
 Both paths retain native account/authentication, quota-probe and cache handling, with `OMARCHY_PATH` defaulting to `/usr/share/omarchy`. They read quota APIs, not LLM inference APIs, and write the records the viewer consumes. The helper never invokes the updater, account-state or auto-switch tools, changes accounts, implements token renewal, or copies credentials between machines. Authentication remains with the host's native Claude/GitHub CLI setup; credential values and arbitrary provider responses are not logged.
 
 For Claude accounts that expose only an enabled `extra_usage` monthly spending cap, the adapter can derive `Monthly spend` from the same response's finite `used_credits / monthly_limit`. This fallback is used only when no usable native session, weekly or scoped quota exists; it does not turn optional extra billing into a restriction on normal subscription windows. A missing reset date stays unknown. No extra request or organization-specific configuration is involved.
 
-**Providers.** Claude, Copilot and Codex: the helper accepts just those three names and rejects anything else before making any call, and the unit names all three. It does not query OpenAI or OpenRouter directly. Adding a provider is an explicit code change to that allowlist, because each one means a headless authenticated request. Any other provider appears in the viewer only while a collector has already written a live reading for it; once that reading is stale the viewer marks it unverified instead of showing remaining capacity.
+**Providers.** Any provider Omarchy ships a collector for works — this is not a fixed set. Ask the machine what it actually has:
 
-**Schedule.** A systemd user timer first becomes due 30 seconds after boot; enabling it later makes that first run due immediately. It then runs 60 seconds after each pass finishes. A lock prevents overlapping helper processes. Each collector call is bounded to 45 seconds and the service to 120.
+```sh
+~/.local/bin/herdr-fleet-quota-refresh --list
+```
+
+That prints one bare id per line for each `omarchy-agent-usage-<id>` collector installed on this host, and exits quietly when there is none; it writes nothing, takes no lock and calls no collector. At the time of writing a stock Omarchy install offers ids such as `claude`, `copilot`, `codex`, `gemini`, `cursor`, `opencode` and `openrouter`, but treat that as an example of the shape rather than a supported list — the install in front of you is the authority.
+
+An id must match `^[a-z][a-z0-9]*$` and be at most 32 characters, because it becomes part of an executable filename and its arguments. The name `update` is reserved and refused: `omarchy-agent-usage-update` is Omarchy's batch updater, which regenerates every record at once, and the helper must never run it on a timer. Each named provider still means its own headless authenticated quota request, so the helper refreshes exactly what you name and nothing else. A provider you do not refresh appears in the viewer only while a collector has already written a live reading for it; once that reading is stale the viewer marks it unverified instead of showing remaining capacity.
+
+**Schedule.** A systemd user timer first becomes due 30 seconds after boot; enabling it later makes that first run due immediately. It then runs 60 seconds after each pass finishes. A lock prevents overlapping helper processes. Each collector call is bounded to 100 seconds and the service to 360. The collector bound has to clear a real cold scan, not only a warm probe: the native `--limits-only` path reuses a cached local-stats scan for 900 seconds and then re-runs it, which measured 48 seconds for Codex on a real host while a warm probe takes 1. The service bound covers the collectors it runs, so the installer sets it from the provider count you choose.
 
 **Failure behaviour.** Before every provider call the helper durably records the next allowed attempt; if that cannot be written, it makes no call. After a failure that provider waits 60 seconds, then 120, 240, 480 and at most 900 seconds, independently of the other provider. A success resets the wait to 60 seconds. Only a nonempty measurement stamped during that provider's invocation can confirm new quota. Cached answers, failed probes and empty responses preserve the historical values and times marked stale, so the viewer treats them as unverified. Each account's freshness is decided on its own. This is intentionally conservative if another refresher has just populated the native 15-second cache.
 
@@ -117,13 +126,22 @@ For Claude accounts that expose only an enabled `extra_usage` monthly spending c
 
 **Install** (explicit opt-in, then a separate step to start it):
 
+First find out what this host can actually refresh, then install for exactly those:
+
 ```sh
-bash scripts/install-refresh.sh              # read-only check; same as --check
-bash scripts/install-refresh.sh --install    # copy the helper and two units; starts nothing
+bash scripts/install-refresh.sh --check                  # read-only: lists the collectors it sees
+bash scripts/install-refresh.sh --install --providers "claude copilot"
+```
+
+`--providers` takes one space-separated list and becomes the unit's `ExecStart` argument list, so you never edit a unit by hand. Ids are deduplicated and validated before anything is written; `update` and any name outside `^[a-z][a-z0-9]*$` are refused with nothing installed. Without `--providers` the shipped unit is copied verbatim, so the default stays `claude copilot codex`.
+
+Then start it, in a separate step:
+
+```sh
 systemctl --user daemon-reload && systemctl --user enable --now herdr-fleet-quota-refresh.timer
 ```
 
-or `bash scripts/install-refresh.sh --install --enable` to do the last step for you. `--enable` needs `--install`, and `--check` cannot be combined with either. When `systemd-analyze` exists the units are verified first and nothing is copied if that fails. Existing files that are identical are left alone; a differing file or a symbolic link is refused. Installation alone starts no quota requests; enabling the timer starts the authenticated quota reads described above. Neither operation restarts a GUI or enables linger.
+or add `--enable` to the install command to do that for you. `--enable` needs `--install`, and `--check` cannot be combined with either. When `systemd-analyze` exists the unit is verified first — with your provider list already substituted — and nothing is copied if that fails. Existing files that are identical are left alone; a differing file or a symbolic link is refused. Installation alone starts no quota requests; enabling the timer starts the authenticated quota reads described above. Neither operation restarts a GUI or enables linger.
 
 **Disable and remove** — scoped to what it installed:
 
