@@ -109,6 +109,36 @@ export function availabilityOf(row, { hostStatus, now = Date.now() } = {}) {
   return { state: "available", reason: "Reported quota remaining" };
 }
 
+// The highest used percent is the window that runs out first, so it is the one that decides headroom.
+// The percent is exact, not the rounded window.used: rounding 99.5% up to 100 would let a window
+// with capacity left read as fully used, so take it from remainingPercent and let the caller format it.
+export function decisiveUsage(row) {
+  const result = { used: null, label: "", remaining: null, currency: "" };
+  if (!row || typeof row !== "object") return result;
+  const windows = Array.isArray(row.windows) ? row.windows : [];
+  let decisive = null;
+  let balance = null;
+  for (const window of windows) {
+    if (!window || typeof window !== "object" || Array.isArray(window)) continue;
+    const exact = Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100
+      ? 100 - window.remainingPercent
+      : window.used;
+    if (Number.isFinite(exact) && exact >= 0 && exact <= 100 && (!decisive || exact > decisive.used)) {
+      decisive = { window, used: exact };
+    }
+    if (!balance && Number.isFinite(window.remaining) && window.remaining >= 0) balance = window;
+  }
+  if (decisive) {
+    result.used = decisive.used;
+    result.label = typeof decisive.window.label === "string" ? decisive.window.label : "";
+  }
+  if (balance) {
+    result.remaining = balance.remaining;
+    result.currency = typeof balance.currency === "string" ? balance.currency : "";
+  }
+  return result;
+}
+
 export function parseQuota(output, now = Date.now()) {
   const rows = [];
   let errors = 0;

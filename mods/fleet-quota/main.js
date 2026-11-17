@@ -3,7 +3,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { checking, closeOverlay, exec, hc, props, openOverlay, theme } from "herdr";
 import { collectFleet } from "./fleet.js";
-import { availabilityOf, READ_SCRIPT } from "./model.js";
+import { availabilityOf, decisiveUsage, READ_SCRIPT } from "./model.js";
 
 // A read a minute: quota windows move by the hour, and every read is an exec
 // on each machine.
@@ -169,8 +169,33 @@ function accountIdentity(host, row) {
     ? ` · ${row.accountLabel} (${row.accountActive ? "active on host" : "not active on host"})` : ""}`;
 }
 
+// One percentage convention everywhere: percent of the quota used, on a 0-100 scale.
+// A window that still has capacity must never read as fully used, so a rounded 100
+// falls back to the exact value, and a rounding-to-0 keeps reading as "<1".
+function usedText(used) {
+  if (!Number.isFinite(used)) return null;
+  const rounded = Math.round(used);
+  if (rounded === 0 && used > 0) return "<1% used";
+  if (rounded === 100 && used < 100) return `${Math.min(99.99, Math.round(used * 100) / 100)}% used`;
+  return `${rounded}% used`;
+}
+
+// Credits keep their remaining amount; only percentages change scale.
+function creditText(remaining) {
+  if (!Number.isFinite(remaining)) return null;
+  return remaining === 0 ? "0" : remaining < 0.01 ? "<0.01" : remaining.toFixed(2);
+}
+
+function creditLabel(remaining, currency) {
+  const amount = creditText(remaining);
+  return amount === null ? null : `${amount}${currency ? ` ${currency}` : ""}`;
+}
+
 function providerEvidence(group) {
-  return `${providerName(group.id)}: ${group.readings.map(({ host, row }) => {
+  const credits = creditLabel(group.remaining, group.currency);
+  const numbers = [usedText(group.used), credits && `${credits} remaining`].filter(Boolean).join(" · ")
+    || "no percentage";
+  return `${providerName(group.id)}: ${numbers} · ${group.readings.map(({ host, row }) => {
     const date = parseTime(row.updatedAt);
     return `${accountIdentity(host, row)} · record ${date ? date.toLocaleString() : "time unknown"}`;
   }).join("; ")}`;
@@ -224,6 +249,9 @@ export default class FleetQuota extends View {
     });
   }
 
+  // Each group carries the numbers the badge and the chips read: the highest exact
+  // used percent across its readings (the window that runs out first) and the credit
+  // balance of that reading, or else the first reading in the group that has one.
   availableProviders(now) {
     const groups = new Map();
     for (const host of this.hosts) {
@@ -234,6 +262,19 @@ export default class FleetQuota extends View {
         groups.get(row.id).readings.push({ host, row });
       }
     }
+    for (const group of groups.values()) {
+      const usages = group.readings.map(({ row }) => decisiveUsage(row));
+      let decisive = null;
+      for (const usage of usages) {
+        if (Number.isFinite(usage.used) && (!decisive || usage.used > decisive.used)) decisive = usage;
+      }
+      const balance = decisive && Number.isFinite(decisive.remaining) ? decisive
+        : usages.find((usage) => Number.isFinite(usage.remaining)) ?? null;
+      group.used = decisive ? decisive.used : null;
+      group.label = decisive ? decisive.label : "";
+      group.remaining = balance ? balance.remaining : null;
+      group.currency = balance ? balance.currency : "";
+    }
     return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
 
@@ -242,11 +283,22 @@ export default class FleetQuota extends View {
   }
 
   // Provider identity only; independent host/account evidence stays in the tooltip.
+  // One number: the tightest available provider, or its credits when no available
+  // provider reports a window percentage. The other providers only add a count.
   bar(t) {
     const groups = this.availableProviders(Date.now());
-    const visible = groups.slice(0, groups.length > 3 ? 2 : 3);
-    const extra = groups.length - visible.length;
-    const label = groups.length ? `Reported quota remaining. ${groups.map(providerEvidence).join("\n")}`
+    let decisive = null;
+    for (const group of groups) {
+      if (Number.isFinite(group.used) && (!decisive || group.used > decisive.used)) decisive = group;
+    }
+    const funded = groups.find((group) => Number.isFinite(group.remaining)) ?? null;
+    const lead = decisive ?? funded;
+    const others = groups.filter((group) => group !== lead);
+    const headline = decisive
+      ? `Quota used: ${usedText(decisive.used).replace(/ used$/, "")} of ${providerName(decisive.id)}${decisive.label ? ` · ${decisive.label}` : ""}.`
+      : funded ? `Credits remaining: ${creditLabel(funded.remaining, funded.currency)} on ${providerName(funded.id)}.` : null;
+    const label = lead
+      ? `${headline} ${groups.map(providerEvidence).join("\n")}`
       : `${this.unverifiedLabel()}. No provider has confirmed remaining quota in fresh readings.`;
     return h_flex()
       .id("fleet-quota-bar")
@@ -265,10 +317,19 @@ export default class FleetQuota extends View {
       .tooltip(label)
       .on_mouse_down("left", (_event, cx) => cx.stop_propagation())
       .on_click((_event, cx) => { cx.stop_propagation(); this.open(); })
-      .children(visible.map((group) => tile(t, providerIcon(group.id), providerColor(t, group.id), 24)
-        .id(`fleet-bar-provider-${group.id}`).tooltip(providerEvidence(group)).accessibility_label(providerEvidence(group))))
-      .when(extra > 0, (el) => el.child(div().id("fleet-bar-more").w(26).flex_none().text_size(10)
-        .text_color(t.muted).child(extra > 99 ? "+99+" : `+${extra}`)))
+      .when(Boolean(lead), (el) => el
+        .child(tile(t, providerIcon(lead.id), providerColor(t, lead.id), 24)
+          .id(`fleet-bar-provider-${lead.id}`).tooltip(providerEvidence(lead)).accessibility_label(providerEvidence(lead)))
+        .when(Boolean(decisive), (inner) => inner.child(div().id("fleet-bar-used").flex_none()
+          .text_size(11).font_semibold().text_color(providerColor(t, decisive.id))
+          .child(usedText(decisive.used).replace(/ used$/, ""))))
+        .when(Boolean(funded) && !decisive, (inner) => inner.child(div().id("fleet-bar-credits").flex_none()
+          .text_size(11).font_semibold().text_color(providerColor(t, funded.id))
+          .child(creditLabel(funded.remaining, funded.currency)))))
+      .when(others.length > 0, (el) => el.child(div().id("fleet-bar-more").w(26).flex_none().text_size(10)
+        .text_color(t.muted).tooltip(others.map(providerEvidence).join("\n"))
+        .accessibility_label(others.map(providerEvidence).join("\n"))
+        .child(others.length > 99 ? "+99+" : `+${others.length}`)))
       .when(!groups.length, (el) => el.child(div().min_w(0).truncate().text_size(11)
         .text_color(t.muted).child(this.unverifiedLabel())))
       .child(div().flex_1())
@@ -307,7 +368,7 @@ export default class FleetQuota extends View {
           .child(tile(t, ICON.gauge, t.accent, 34))
           .child(
             v_flex().flex_1().min_w(0).gap(1)
-              .child(div().text_size(20).font_semibold().child("Reported quota remaining"))
+              .child(div().text_size(20).font_semibold().child("Reported quota"))
               .child(div().text_size(11).text_color(t.muted)
                 .child(this.loading ? "Reading saved quota records…" : "Independent readings · per machine, per account")),
           )
@@ -347,12 +408,16 @@ export default class FleetQuota extends View {
   overview(t, groups) {
     return h_flex().id("fleet-overview").flex_none().min_w(0).gap(6).flex_wrap()
       .when(!groups.length, (el) => el.child(pill(t, this.unverifiedLabel(), t.muted)))
-      .children(groups.slice(0, 6).map((group) => h_flex().id(`fleet-available-${group.id}`)
-        .min_w(0).max_w(180).gap(6).px(8).py(5).items_center().rounded(7).bg(t.surface)
-        .border(1).border_color(providerColor(t, group.id))
-        .tooltip(providerEvidence(group)).accessibility_label(providerEvidence(group))
-        .child(icon(providerIcon(group.id), 14, providerColor(t, group.id)))
-        .child(div().min_w(0).truncate().text_size(12).text_color(providerColor(t, group.id)).child(providerName(group.id)))))
+      .children(groups.slice(0, 6).map((group) => {
+        const used = usedText(group.used);
+        const name = used ? `${providerName(group.id)} ${used.replace(/ used$/, "")}` : providerName(group.id);
+        return h_flex().id(`fleet-available-${group.id}`)
+          .min_w(0).max_w(180).gap(6).px(8).py(5).items_center().rounded(7).bg(t.surface)
+          .border(1).border_color(providerColor(t, group.id))
+          .tooltip(providerEvidence(group)).accessibility_label(providerEvidence(group))
+          .child(icon(providerIcon(group.id), 14, providerColor(t, group.id)))
+          .child(div().min_w(0).truncate().text_size(12).text_color(providerColor(t, group.id)).child(name));
+      }))
       .when(groups.length > 6, (el) => el.child(pill(t, `+${groups.length - 6} more`, t.muted)
         .tooltip(groups.slice(6).map(providerEvidence).join("\n"))
         .accessibility_label(groups.slice(6).map(providerEvidence).join("\n"))));
@@ -494,19 +559,22 @@ export default class FleetQuota extends View {
     const resetAt = parseTime(w?.resetsAt);
     const raw = balance ? w?.remaining : reset === "passed" ? null : w?.remainingPercent;
     const remaining = Number.isFinite(raw) && raw >= 0 ? raw : null;
+    // The same exact used percent the badge reads: the meter and the number agree.
+    const used = balance || remaining === null ? null : 100 - remaining;
+    const usedLabel = usedText(used);
     const label = balance ? "Prepaid balance" : w?.label ?? "—";
     const currency = w?.currency ? ` ${w.currency}` : "";
-    const amount = remaining === null ? null : balance
-      ? remaining === 0 ? "0" : remaining < 0.01 ? "<0.01" : remaining.toFixed(2)
-      : remaining > 0 && remaining < 1 ? "<1" : String(Math.round(remaining * 10) / 10);
+    const amount = balance && remaining !== null ? creditText(remaining) : null;
+    const value = balance ? (amount === null ? null : `${amount}${currency} remaining`) : usedLabel;
+    // Balances keep their raw amount in the tooltip; percentages keep the used scale.
+    const verbatim = balance ? (remaining === null ? null : `${remaining}${currency} remaining`) : usedLabel;
+    const estimated = w?.estimated ? " (estimated)" : "";
+    const reading = `${value ?? "Remaining unknown"}${estimated}`;
     // A stale window keeps its last saved value as history, never as a reading.
-    const saved = remaining === null ? "Remaining unknown, not zero"
-      : `${remaining}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
-    const exact = stale ? `last saved: ${saved}` : saved;
-    const reading = stale ? "No live reading"
-      : remaining === null ? "Remaining unknown"
-      : `${amount}${balance ? currency : "%"} remaining${w?.estimated ? " (estimated)" : ""}`;
-    const color = remaining === 0 ? t.working : providerColor(t, row?.id);
+    const savedValue = verbatim === null ? "Remaining unknown, not zero" : `${verbatim}${estimated}`;
+    const exact = stale ? `last saved: ${savedValue}` : savedValue;
+    const unknown = value === null;
+    const color = (balance ? remaining === 0 : used === 100) ? t.working : providerColor(t, row?.id);
     const reason = reset === "passed" ? "Awaiting reading after reset" : w?.reason;
     const resetText = reset === "passed" ? "reset passed" : `resets ${reset}`;
     const savedAt = stale ? stamp(t, row?.updatedAt, "saved", now) : null;
@@ -517,7 +585,7 @@ export default class FleetQuota extends View {
         .child(div().flex_1().min_w(0).truncate().text_size(12).tooltip(label).accessibility_label(label).child(label))
         .child(div().id(`fleet-window-pct-${hostIndex}-${rowIndex}-${windowIndex}`)
           .w(190).flex_none().truncate().tooltip(exact).accessibility_label(exact).text_right().text_size(12).font_semibold()
-          .text_color(stale || remaining === null ? t.muted : color).child(reading)))
+          .text_color(stale || unknown ? t.muted : color).child(stale ? "No live reading" : reading)))
       .child(h_flex().gap(10).items_center().min_w(0).when(!balance, (el) => el.child(
         h_flex()
           .id(`fleet-window-track-${hostIndex}-${rowIndex}-${windowIndex}`)
@@ -528,13 +596,15 @@ export default class FleetQuota extends View {
           .overflow_hidden()
           .bg(t.border)
           .role("progress_indicator")
-          .accessibility_label(stale ? `${label}: no live reading; ${exact}` : `${label}: ${exact}`)
-          .when(remaining !== null && !stale, (el) =>
+          .accessibility_label(stale ? `${label}: no live reading; ${exact}`
+            : usedLabel === null ? `${label}: remaining unknown`
+            : `${label}: ${usedLabel.replace(/ used$/, "")} of the quota used`)
+          .when(used !== null && !stale, (el) =>
             el.child(div()
               .id(`fleet-window-fill-${hostIndex}-${rowIndex}-${windowIndex}`)
               .h_full()
               .flex_none()
-              .w(`${Math.min(100, remaining)}%`)
+              .w(`${Math.min(100, used)}%`)
               .rounded(3)
               .bg(color))),
       ))

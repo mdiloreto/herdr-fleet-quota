@@ -1,24 +1,24 @@
 # Fleet quota
 
-A Herdr mod that shows which AI providers still have capacity across every machine in your fleet: a compact badge of provider icons for a bar, and a dialog with the remaining capacity per machine, provider and account.
+A Herdr mod that shows which AI providers still have capacity across every machine in your fleet: a compact badge carrying the decisive percent of quota used for a bar, and a dialog with the reported quota per machine, provider and account.
 
 > The preview image is `docs/preview.png`: a real capture of this dialog with the LAN host address blurred out. No other workstation content is in it.
 
 ## What you see
 
-**The badge**, 118 px wide and as tall as its bar: the icons of the providers that currently report remaining capacity, up to three; with more, two icons and a `+N` count. It shows provider icons only — no percentage and no warning marks. Hovering names the providers (tooltip and accessibility label). With nothing to show it says so honestly: a *Checking* state while the first read runs and an *Unverified* state when no capacity could be confirmed; neither implies zero or exhausted. The whole badge is a button that opens the dialog. Exact label wording is set in `main.js`.
+**The badge**, 118 px wide and as tall as its bar: the icon of the provider closest to running out, with the percent of quota used by its tightest window (`26%`); a `+N` count adds how many other providers are available. When no available provider reports a percentage but one reports prepaid credits, the remaining amount is shown instead (`30.00 USD`). Hovering names the provider and window the number came from and lists every available provider with its own percent used, the machine and account behind it, and the record time (tooltip and accessibility label). With nothing to show it says so honestly: a *Checking…* state while the first read runs and an *Unverified* state when no capacity could be confirmed; neither implies zero or exhausted. The whole badge is a button that opens the dialog. Exact label wording is set in `main.js`.
 
 **The dialog**, 620×560, centered, top to bottom:
 
-1. **Header:** the title "Reported quota remaining" and a short status line (independent readings per machine and account, or a reading-in-progress note); at the right, a reread control (saved records only, not a provider query) and a close control. Below it, the providers currently available, or the *Unverified* state.
+1. **Header:** the title "Reported quota" and a short status line (independent readings per machine and account, or a reading-in-progress note); at the right, a reread control (saved records only, not a provider query) and a close control. Below it, a chip per available provider with its own percent used when it reports one (`Claude 16%`), a `+N more` chip beyond six, or the unverified state (*Checking…* before the first read lands, *Unverified* after).
 2. **Notice strip**, only after a failed machine listing or a failed refresh: the failure in the theme's blocked color. What was read before stays below.
 3. **Scrolling host list:** one card per machine, this computer first and the rest sorted by name. Each card has the machine's icon and name and its status.
 4. **Provider and account rows** inside each card: the provider icon and name, the account label and active marker when the reading is split per account, and the exact age of its reading.
-5. **Quota windows and balances** under each provider: the remaining capacity of each window (`N% remaining`) with a progress track, and its exact reset time on hover; a prepaid balance is shown as an amount. Unknown values say so and never read as 0.
+5. **Quota windows and balances** under each provider: the percent of quota used in each window (`N% used`) with a progress track that fills to that same percent, and its exact reset time on hover; a prepaid balance is shown as an amount (`30.00 USD remaining`) and carries no track. A window with capacity left never reads as fully used (`99.5% used`, `<1% used`); a stale window reads *No live reading* with an empty track, the age of the reading, and its last saved value in the tooltip. Unknown values say so and never read as 0.
 6. **Availability reasons:** each provider or account row says whether it is available, exhausted or unknown and why (for example offline, read failed, provider not ready, stale, windows omitted, awaiting a reading after a reset). An estimated value does not count as confirmed capacity.
 7. **Footer:** one line stating these are saved quotas, not a routing guarantee, that machines may share accounts so nothing is added up, and that refresh rereads records, not providers.
 
-There is no fleet-wide "highest used" or "incomplete" headline. Type, spacing and colors come from the active Herdr theme and provider tiles use per-provider accents; the mod ships no fixed palette beyond those. Only the host list scrolls.
+The dialog itself has no fleet-wide "highest used" or "incomplete" headline. Type, spacing and colors come from the active Herdr theme and provider tiles use per-provider accents; the mod ships no fixed palette beyond those. Only the host list scrolls.
 
 ## How it behaves
 
@@ -45,7 +45,7 @@ The headless Claude path loads the installed collector in a separate Python proc
 
 If the native Claude response has no usable standard/scoped windows, enabled `extra_usage` with a finite positive monthly cap and nonnegative used credits supplies a `Monthly spend` window. It uses the original ratio, including zero and overage, and never invents a month-end reset or makes another request.
 
-Reading semantics: raw used fractions determine remaining capacity before display rounding. A positive exact balance can confirm capacity without a funded amount. Every reported constraint in an account must have positive remaining capacity; unknown, estimated, omitted or expired constraints prevent that account from qualifying. Producer/account fetch times determine freshness, with the larger of 30 minutes and twice the declared collector interval as the age limit. The bar groups provider identity only, never percentages or balances.
+Reading semantics: raw used fractions determine remaining capacity before display rounding. A positive exact balance can confirm capacity without a funded amount. Every reported constraint in an account must have positive remaining capacity; unknown, estimated, omitted or expired constraints prevent that account from qualifying. Producer/account fetch times determine freshness, with the larger of 30 minutes and twice the declared collector interval as the age limit. The bar groups provider identity only; it never adds percentages or balances together.
 
 ## Watch out
 
@@ -72,5 +72,5 @@ Reading semantics: raw used fractions determine remaining capacity before displa
 - `sh scripts/install.sh` changes nothing and reports paths, prerequisites and actions; `--install` on a fresh Herdr home creates exactly the 12 mod files, a second run is a no-op, and a changed or symlinked install is refused untouched.
 - `herdr-app check` of the installed folder exits 0, and `herdr-app status` shows no error for this mod.
 - `bash scripts/install-refresh.sh` (check) changes nothing; `--install` copies the helper and two units without starting anything; the timer only runs after it is enabled in a separate step; a differing or symlinked target is refused untouched.
-- `herdr-app do mod.open --name fleet-quota` opens the 620×560 dialog with the header, a card per machine, provider rows with remaining capacity, ages and reset times, availability reasons and the footer; the reread control rereads and the close control or Esc closes.
-- With the bar block in a personal layout, the 118 px badge shows icons only for providers with current remaining capacity (two icons and `+N` beyond three), shows *Checking* then *Unverified* when nothing can be confirmed, and carries no percentage or warning marks.
+- `herdr-app do mod.open --name fleet-quota` opens the 620×560 dialog with the header, a card per machine, provider rows with quota used, balances, ages and reset times, availability reasons and the footer; the reread control rereads and the close control or Esc closes.
+- With the bar block in a personal layout, the 118 px badge shows one provider icon with the percent of quota used by the tightest available window, a `+N` count of the other available providers, the remaining credits when no available provider reports a percentage, and *Checking…* then *Unverified* when nothing can be confirmed.
