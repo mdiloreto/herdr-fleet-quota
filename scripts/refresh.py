@@ -367,8 +367,8 @@ def interrupted(signum: int, frame: Any) -> None:
 
 def main() -> int:
     providers = sys.argv[1:] or ["claude", "copilot"]
-    if any(p not in ("claude", "copilot") for p in providers):
-        log("arguments", "only claude and copilot are supported")
+    if any(p not in ("claude", "copilot", "codex") for p in providers):
+        log("arguments", "only claude, copilot and codex are supported")
         return 2
     os.umask(0o077)
     signal.signal(signal.SIGTERM, interrupted)

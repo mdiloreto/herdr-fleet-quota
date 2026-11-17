@@ -1,9 +1,9 @@
 [Unit]
-Description=herdr-fleet-quota headless refresh (Claude + Copilot, limits only)
+Description=herdr-fleet-quota headless refresh (Claude + Copilot + Codex, limits only)
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h
 UMask=0077
 TimeoutStartSec=120
-ExecStart=%h/.local/bin/herdr-fleet-quota-refresh claude copilot
+ExecStart=%h/.local/bin/herdr-fleet-quota-refresh claude copilot codex

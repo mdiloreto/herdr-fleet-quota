@@ -436,6 +436,31 @@ test('missing Claude does not prevent Copilot refreshing', (t) => {
   assert.equal(calls(x), 'copilot --limits-only\n');
 });
 
+test('Codex refreshes through its native limits-only path', (t) => {
+  const x = fixture(t);
+  collector(x, 'codex', live(record('codex')));
+  assert.equal(run(x, ['codex']).status, 0);
+  assert.equal(calls(x), 'codex --limits-only\n');
+  const output = saved(x, 'codex');
+  assert.equal(output.id, 'codex');
+  assert.equal(output.limitsStale, false);
+  assert.equal(output.limits[0].percent, 1);
+  assert.equal(fs.statSync(path.join(x.usage, 'codex.json')).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+});
+
+test('failing Codex collector is reported without overwriting the previous reading', (t) => {
+  const x = fixture(t), old = record('codex');
+  prior(x, 'codex', old);
+  collector(x, 'codex', 'echo SECRET >&2; exit 3');
+  const r = run(x, ['codex']);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /codex: collector failed \(exit 3\)\n/);
+  assert.deepEqual(saved(x, 'codex'), { ...old, limitsStale: true });
+  assert.doesNotMatch(r.stdout + r.stderr, /SECRET|Traceback/);
+  assert.equal(calls(x), 'codex --limits-only\n');
+});
+
 test('partial accounts refresh only the independently fresh accounts', (t) => {
   const x = fixture(t);
   const old = record('claude', { accounts: ['a', 'b'].map(id => ({ id,
@@ -521,7 +546,7 @@ test('backoff doubles to 15m independently, and skips collector until eligible',
 test('unsupported args make no writes or calls, no account-state/update invocation', (t) => {
   const x = fixture(t);
   for (const id of ['claude', 'copilot', 'update', 'account-state']) collector(x, id, live(record(id)));
-  for (const args of [['--force'], ['claude', 'codex'], ['account-state'], ['openrouter']]) {
+  for (const args of [['--force'], ['claude', 'gemini'], ['account-state'], ['openrouter']]) {
     assert.equal(run(x, args).status, 2);
     assert.equal(fs.existsSync(x.state), false);
   }
@@ -637,7 +662,7 @@ test('user units are bounded oneshot with no credentials or global writes', () =
   assert.match(service, /^Type=oneshot$/m);
   assert.match(service, /^UMask=0077$/m);
   assert.match(service, /^TimeoutStartSec=120$/m);
-  assert.match(service, /^ExecStart=%h\/\.local\/bin\/herdr-fleet-quota-refresh claude copilot$/m);
+  assert.match(service, /^ExecStart=%h\/\.local\/bin\/herdr-fleet-quota-refresh claude copilot codex$/m);
   assert.match(timer, /^OnBootSec=30s$/m);
   assert.match(timer, /^OnUnitInactiveSec=60s$/m);
   assert.doesNotMatch(service + timer, /Environment=|TOKEN|sudo|\/home\//);
