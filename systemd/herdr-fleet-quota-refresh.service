@@ -5,5 +5,5 @@ Description=herdr-fleet-quota headless refresh (Claude + Copilot + Codex, limits
 Type=oneshot
 WorkingDirectory=%h
 UMask=0077
-TimeoutStartSec=120
+TimeoutStartSec=360
 ExecStart=%h/.local/bin/herdr-fleet-quota-refresh claude copilot codex

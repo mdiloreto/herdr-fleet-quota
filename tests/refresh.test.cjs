@@ -449,6 +449,118 @@ test('Codex refreshes through its native limits-only path', (t) => {
   assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
 });
 
+test('any installed collector, not just the built-in ids, refreshes through its native path', (t) => {
+  const x = fixture(t);
+  collector(x, 'gemini', live(record('gemini')));
+  assert.equal(run(x, ['gemini']).status, 0);
+  assert.equal(calls(x), 'gemini --limits-only\n');
+  const output = saved(x, 'gemini');
+  assert.equal(output.id, 'gemini');
+  assert.equal(output.limitsStale, false);
+  assert.equal(output.limits[0].percent, 1);
+  assert.equal(fs.statSync(path.join(x.usage, 'gemini.json')).mode & 0o777, 0o600);
+});
+
+test('invalid provider names are rejected before any directory, lock or collector call', (t) => {
+  const x = fixture(t);
+  for (const id of ['claude', 'copilot']) collector(x, id, live(record(id)));
+  for (const provider of ['../claude', 'Claude', 'claude-2', 'claude_2', '-claude', '', 'a'.repeat(33)]) {
+    const r = run(x, [provider]);
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /invalid provider name; allowed: \[a-z\]\[a-z0-9\]\*, at most 32 characters\n/);
+    if (provider) assert.equal((r.stdout + r.stderr).includes(provider), false);
+    assert.equal(fs.existsSync(x.state), false);
+    assert.equal(calls(x), '');
+  }
+  assert.deepEqual(fs.readdirSync(x.home), ['omarchy']);
+});
+
+test('--list prints only sorted installed collector ids without creating state or calling them', (t) => {
+  const x = fixture(t);
+  const bin = path.join(x.omarchy, 'bin');
+  for (const name of ['omarchy-agent-usage-gemini', 'omarchy-agent-usage-claude',
+    'omarchy-agent-usage-', 'other']) {
+    fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 9\n', { mode: 0o755 });
+  }
+  const r = run(x, ['--list']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'claude\ngemini\n');
+  assert.equal(fs.existsSync(x.state), false);
+  assert.equal(fs.existsSync(x.control), false);
+  assert.equal(calls(x), '');
+});
+
+test('--list exits zero with empty output when no collectors are installed', (t) => {
+  const x = fixture(t);
+  const empty = run(x, ['--list']);
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.equal(empty.stdout, '');
+  fs.rmdirSync(path.join(x.omarchy, 'bin'));
+  const missing = run(x, ['--list']);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.equal(missing.stdout, '');
+  assert.equal(fs.existsSync(x.state), false);
+});
+
+test('--list survives a reader that closes early, without a traceback', (t) => {
+  const x = fixture(t);
+  const bin = path.join(x.omarchy, 'bin');
+  for (const name of ['omarchy-agent-usage-claude', 'omarchy-agent-usage-copilot',
+    'omarchy-agent-usage-gemini']) {
+    fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 9\n', { mode: 0o755 });
+  }
+  // The listing is documented as pipeable, so a reader that quits after one
+  // line must not surface a BrokenPipeError traceback on stderr.
+  const r = spawnSync('sh', ['-c', `python3 ${JSON.stringify(helper)} --list | head -1`],
+    { env: x.env, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'claude\n');
+  assert.equal(r.stderr, '');
+});
+
+test('--list omits the batch updater shipped beside the real collectors', (t) => {
+  const x = fixture(t);
+  const bin = path.join(x.omarchy, 'bin');
+  for (const name of ['omarchy-agent-usage-update', 'omarchy-agent-usage-claude',
+    'omarchy-agent-usage-copilot', 'omarchy-agent-usage-local', 'omarchy-agent-usage-ollama',
+    'omarchy-agent-usage-opencode', 'omarchy-agent-usage-deepseek']) {
+    fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 9\n', { mode: 0o755 });
+  }
+  const r = run(x, ['--list']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'claude\ncopilot\ndeepseek\nlocal\nollama\nopencode\n');
+  assert.doesNotMatch(r.stdout, /^update$/m);
+  assert.equal(fs.existsSync(x.state), false);
+  assert.equal(fs.existsSync(x.control), false);
+  assert.equal(calls(x), '');
+});
+
+test('naming the batch updater is refused before any directory, lock or collector call', (t) => {
+  const x = fixture(t);
+  for (const id of ['claude', 'update']) collector(x, id, live(record(id)));
+  for (const args of [['update'], ['claude', 'update']]) {
+    const r = run(x, args);
+    assert.equal(r.status, 2);
+    assert.equal(r.stdout,
+      'herdr-fleet-quota-refresh: arguments: refusing the batch updater; name a provider such as claude or copilot\n');
+    assert.equal(r.stderr, '');
+    assert.equal(fs.existsSync(x.state), false);
+    assert.equal(calls(x), '');
+  }
+  assert.deepEqual(fs.readdirSync(x.home), ['omarchy']);
+});
+
+test('--list combined with provider names is a stderr usage error', (t) => {
+  const x = fixture(t);
+  collector(x, 'gemini', live(record('gemini')));
+  const r = run(x, ['--list', 'gemini']);
+  assert.equal(r.status, 2);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /herdr-fleet-quota-refresh: arguments: --list takes no provider names\n/);
+  assert.equal(fs.existsSync(x.state), false);
+  assert.equal(calls(x), '');
+});
+
 test('failing Codex collector is reported without overwriting the previous reading', (t) => {
   const x = fixture(t), old = record('codex');
   prior(x, 'codex', old);
@@ -546,7 +658,7 @@ test('backoff doubles to 15m independently, and skips collector until eligible',
 test('unsupported args make no writes or calls, no account-state/update invocation', (t) => {
   const x = fixture(t);
   for (const id of ['claude', 'copilot', 'update', 'account-state']) collector(x, id, live(record(id)));
-  for (const args of [['--force'], ['claude', 'gemini'], ['account-state'], ['openrouter']]) {
+  for (const args of [['--force'], ['claude', 'Gemini'], ['account-state'], ['OpenRouter']]) {
     assert.equal(run(x, args).status, 2);
     assert.equal(fs.existsSync(x.state), false);
   }
@@ -605,11 +717,26 @@ test('timeout preserves old quota as stale and kills owned group', (t) => {
   const x = fixture(t), old = record('claude');
   prior(x, 'claude', old);
   collector(x, 'claude', 'sleep 30 &\necho $! > "$HOME/child"\nwait');
-  const r = harness(x, 'assert m.TIMEOUT == 45\nm.TIMEOUT=0.5');
+  const r = harness(x, 'assert m.TIMEOUT == 100\nm.TIMEOUT=0.5');
   assert.equal(r.status, 1);
   assert.deepEqual(saved(x, 'claude'), { ...old, limitsStale: true });
   const proc = `/proc/${fs.readFileSync(path.join(x.home, 'child'), 'utf8').trim()}/stat`;
   if (fs.existsSync(proc)) assert.match(fs.readFileSync(proc, 'utf8'), /\) Z /);
+});
+
+test('the collector bound clears a measured cold scan and a slow collector still publishes', (t) => {
+  const x = fixture(t);
+  const bound = harness(x, 'print(m.TIMEOUT); sys.exit(0)');
+  const seconds = Number(bound.stdout.trim());
+  // 48 s is a measured cold local-stats scan for Codex on a real host, while
+  // a warm probe takes 1 s. A bound below that turns the reading stale every
+  // 15 minutes, when the native --limits-only scan cache expires.
+  assert.ok(seconds >= 48, `collector bound ${seconds}s cannot clear a 48 s cold scan`);
+  collector(x, 'copilot', `sleep 2\n${live(record('copilot'))}`);
+  const r = run(x, ['copilot']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(saved(x, 'copilot').limitsStale, false);
+  assert.equal(saved(x, 'copilot').limits[0].percent, 1);
 });
 
 test('atomic write interruptions clean only owned staging files', (t) => {
@@ -661,7 +788,7 @@ test('user units are bounded oneshot with no credentials or global writes', () =
   const timer = fs.readFileSync(path.join(root, 'systemd/herdr-fleet-quota-refresh.timer'), 'utf8');
   assert.match(service, /^Type=oneshot$/m);
   assert.match(service, /^UMask=0077$/m);
-  assert.match(service, /^TimeoutStartSec=120$/m);
+  assert.match(service, /^TimeoutStartSec=360$/m);
   assert.match(service, /^ExecStart=%h\/\.local\/bin\/herdr-fleet-quota-refresh claude copilot codex$/m);
   assert.match(timer, /^OnBootSec=30s$/m);
   assert.match(timer, /^OnUnitInactiveSec=60s$/m);

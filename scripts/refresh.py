@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""One headless Claude/Copilot quota pass; no auth refresh or forced probes."""
+"""One headless Omarchy quota pass; no auth refresh or forced probes."""
 
 import copy
 import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import stat
 import subprocess
@@ -15,7 +16,18 @@ import time
 from typing import Any
 
 MAX_BYTES = 256 * 1024
-TIMEOUT = 45
+# A collector may pay a cold local-stats scan: the native --limits-only path
+# reuses a cached scan for 900 s and then re-runs it, which measured 48 s for
+# Codex on a real host while a warm probe takes 1 s. The bound has to clear a
+# real scan, not only a warm one, or the reading goes stale every 15 minutes.
+TIMEOUT = 100
+COLLECTOR_PREFIX = "omarchy-agent-usage-"
+# Batch updater shipped beside the per-provider collectors, not a provider.
+BATCH_UPDATER = "update"
+# The id becomes part of an executable filename and argv, so the charset is
+# limited to lowercase alphanumerics: no path separators, no leading dash, no
+# uppercase, no spaces, and \Z stops a trailing newline from slipping through.
+PROVIDER_NAME = re.compile(r"[a-z][a-z0-9]{0,31}\Z")
 NATIVE_STATUS_MESSAGES = {
     "Limits paused": "native status: Limits paused",
     "Sign-in expired": "native status: Sign-in expired",
@@ -116,8 +128,22 @@ raise SystemExit(main())
 """
 
 
-def log(provider: str, message: str) -> None:
-    print(f"herdr-fleet-quota-refresh: {provider}: {message}", flush=True)
+def log(provider: str, message: str, stream: Any = None) -> None:
+    print(f"herdr-fleet-quota-refresh: {provider}: {message}",
+          file=sys.stdout if stream is None else stream, flush=True)
+
+
+def collectors(bin_dir: Path) -> list[str]:
+    try:
+        names = os.listdir(bin_dir)
+    except OSError:
+        return []
+    ids = [name[len(COLLECTOR_PREFIX):] for name in names
+           if name.startswith(COLLECTOR_PREFIX)
+           and PROVIDER_NAME.fullmatch(name[len(COLLECTOR_PREFIX):])
+           and name[len(COLLECTOR_PREFIX):] != BATCH_UPDATER
+           and (bin_dir / name).is_file()]
+    return sorted(ids)
 
 
 def directory(path: Path) -> None:
@@ -366,14 +392,31 @@ def interrupted(signum: int, frame: Any) -> None:
 
 
 def main() -> int:
-    providers = sys.argv[1:] or ["claude", "copilot"]
-    if any(p not in ("claude", "copilot", "codex") for p in providers):
-        log("arguments", "only claude, copilot and codex are supported")
+    arguments = sys.argv[1:]
+    environment = dict(os.environ)
+    environment["OMARCHY_PATH"] = environment.get("OMARCHY_PATH") or "/usr/share/omarchy"
+    if "--list" in arguments:
+        if arguments != ["--list"]:
+            log("arguments", "--list takes no provider names", sys.stderr)
+            return 2
+        try:
+            for provider in collectors(Path(environment["OMARCHY_PATH"]) / "bin"):
+                print(provider, flush=True)
+        except BrokenPipeError:
+            # The listing is meant to be piped; a reader that quits early is not
+            # an error. Point the descriptor at devnull so the interpreter's
+            # final flush cannot raise a second time.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
+    providers = arguments or ["claude", "copilot"]
+    if BATCH_UPDATER in providers:
+        log("arguments", "refusing the batch updater; name a provider such as claude or copilot")
+        return 2
+    if any(not PROVIDER_NAME.fullmatch(p) for p in providers):
+        log("arguments", "invalid provider name; allowed: [a-z][a-z0-9]*, at most 32 characters")
         return 2
     os.umask(0o077)
     signal.signal(signal.SIGTERM, interrupted)
-    environment = dict(os.environ)
-    environment["OMARCHY_PATH"] = environment.get("OMARCHY_PATH") or "/usr/share/omarchy"
     state = Path(environment.get("XDG_STATE_HOME") or str(Path.home() / ".local/state"))
     if not state.is_absolute():
         log("state", "absolute state path required")
