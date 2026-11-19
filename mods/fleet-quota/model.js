@@ -85,6 +85,11 @@ function usedPercent(percent) {
   return Math.min(100, Math.round(percent * 100));
 }
 
+// Credits are amounts: the same sub-cent rule the viewer uses, so one amount never reads two ways.
+function creditAmount(remaining) {
+  return remaining === 0 ? "0" : remaining < 0.01 ? "<0.01" : remaining.toFixed(2);
+}
+
 export function availabilityOf(row, { hostStatus, now = Date.now() } = {}) {
   const unknown = (reason) => ({ state: "unknown", reason });
   if (hostStatus !== "ok") return unknown(hostStatus === "offline" ? "Machine is offline"
@@ -112,6 +117,7 @@ export function availabilityOf(row, { hostStatus, now = Date.now() } = {}) {
 // The highest used percent is the window that runs out first, so it is the one that decides headroom.
 // The percent is exact, not the rounded window.used: rounding 99.5% up to 100 would let a window
 // with capacity left read as fully used, so take it from remainingPercent and let the caller format it.
+// A balance is an amount, not a percentage window, so it reports its remaining credit and no percent.
 export function decisiveUsage(row) {
   const result = { used: null, label: "", remaining: null, currency: "" };
   if (!row || typeof row !== "object") return result;
@@ -122,7 +128,7 @@ export function decisiveUsage(row) {
     if (!window || typeof window !== "object" || Array.isArray(window)) continue;
     const exact = Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100
       ? 100 - window.remainingPercent
-      : window.used;
+      : null;
     if (Number.isFinite(exact) && exact >= 0 && exact <= 100 && (!decisive || exact > decisive.used)) {
       decisive = { window, used: exact };
     }
@@ -205,7 +211,7 @@ export function parseQuota(output, now = Date.now()) {
       if (balance != null) {
         const valid = typeof balance === "object" && !Array.isArray(balance) && balance.invalid !== true && Number.isFinite(balance.remaining) && balance.remaining >= 0;
         const currency = typeof balance.currency === "string" && /^[A-Z]{3}$/.test(balance.currency) ? balance.currency : "";
-        const amount = valid ? `${balance.remaining.toFixed(2)}${currency ? ` ${currency}` : ""}` : "unknown";
+        const amount = valid ? `${creditAmount(balance.remaining)}${currency ? ` ${currency}` : ""}` : "unknown";
         const funded = Number.isFinite(balance.funded) && balance.funded > 0 ? balance.funded : null;
         const metered = valid && funded !== null && balance.remaining <= funded;
         const mismatch = valid && funded !== null && balance.remaining > funded ? " (funding mismatch)" : "";

@@ -847,13 +847,40 @@ test("decisive usage keeps sub-integer headroom instead of rounding to fully use
   assert.deepEqual(decisiveUsage(row), { used: 99.5, label: "Weekly", remaining: null, currency: "" });
 });
 
-test("decisive usage falls back to the metered balance percentage", async () => {
+test("a credit balance never reads as fully used while credit is left", async () => {
   const { parseQuota, decisiveUsage } = await modelPromise;
-  const row = parseQuota(line("metered", 0, {
+  const row = parseQuota(line("fireworks", 0, {
+    limits: [], balance: { remaining: 0.001, funded: 20, currency: "USD" },
+  }), now).rows[0];
+  assert.equal(row.windows[0].used, 100, "the row sort key stays a rounded integer");
+  assert.equal(row.windows[0].label, "Balance <0.01 USD", "the same sub-cent rule the viewer uses");
+  assert.deepEqual(decisiveUsage(row), { used: null, label: "", remaining: 0.001, currency: "USD" });
+});
+
+test("decisive usage never turns a credit balance into a percentage", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const half = parseQuota(line("half", 0, {
+    limits: [], balance: { remaining: 5, funded: 10, currency: "USD" },
+  }), now).rows[0];
+  assert.equal(half.used, 50, "the legacy row percentage is unchanged");
+  assert.deepEqual(decisiveUsage(half), { used: null, label: "", remaining: 5, currency: "USD" });
+  const metered = parseQuota(line("metered", 0, {
     limits: [], balance: { remaining: 5, funded: 20, currency: "USD" },
   }), now).rows[0];
-  assert.equal(row.windows[0].remainingPercent, undefined);
-  assert.deepEqual(decisiveUsage(row), { used: 75, label: "Balance 5.00 USD", remaining: 5, currency: "USD" });
+  assert.equal(metered.windows[0].remainingPercent, undefined);
+  assert.equal(metered.windows[0].used, 75, "the window percentage is unchanged");
+  assert.deepEqual(decisiveUsage(metered), { used: null, label: "", remaining: 5, currency: "USD" });
+});
+
+test("decisive usage keeps the exact window percent beside a funded balance", async () => {
+  const { parseQuota, decisiveUsage } = await modelPromise;
+  const exact = parseQuota(line("copilot", 0, { limits: [{ label: "Monthly", percent: 0.995 }] }), now).rows[0];
+  assert.equal(exact.windows[0].used, 100, "the window percentage stays a rounded integer");
+  assert.deepEqual(decisiveUsage(exact), { used: 99.5, label: "Monthly", remaining: null, currency: "" });
+  const mixed = parseQuota(line("mixed", 0, {
+    limits: [{ label: "Monthly", percent: 0.995 }], balance: { remaining: 0.001, funded: 20, currency: "USD" },
+  }), now).rows[0];
+  assert.deepEqual(decisiveUsage(mixed), { used: 99.5, label: "Monthly", remaining: 0.001, currency: "USD" });
 });
 
 test("decisive usage claims no percentage when every window is unknown", async () => {
@@ -873,10 +900,11 @@ test("decisive usage never throws on malformed rows and windows", async () => {
     { windows: [null, "x", [], { used: "40" }, { used: null }, { used: NaN }, { used: Infinity },
       { used: -1 }, { used: 101 }, { remaining: -5 }, { remaining: "5" }, { remaining: null }] },
   ]) assert.deepEqual(decisiveUsage(row), empty, JSON.stringify(row));
-  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remaining: -1 }] }), {
-    used: 40, label: "Session", remaining: null, currency: "",
-  });
-  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remainingPercent: 101 }] }), {
+  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remaining: -1 }] }), empty,
+    "a rounded used alone never decides the percentage");
+  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remainingPercent: 101 }] }), empty,
+    "an out-of-range remainingPercent is not a percentage");
+  assert.deepEqual(decisiveUsage({ windows: [{ used: 40, label: "Session", remainingPercent: 60 }] }), {
     used: 40, label: "Session", remaining: null, currency: "",
   });
 });

@@ -4,7 +4,7 @@ A Herdr mod that tells you which AI providers still have capacity, across every 
 
 These are saved quota readings, not cost estimates and not a live meter. The mod reads the usage records the Omarchy agents collector writes on each measured host. It never calls a provider itself, never adds accounts or balances together, and never installs a collector. An optional, separate helper for headless Linux hosts (below) can keep those records fresh; it is not part of the viewer install.
 
-![The fleet quota dialog: one card per machine, one row per provider, percent of quota used per window](docs/preview.png)
+![The fleet quota dialog: one card per machine, one row per provider, percent of quota used per window](preview.png)
 
 Status: MIT licensed, pre-beta. The preview above is a real capture with the LAN host address blurred out. This repository is the mod's development source; a separate personal configuration repository keeps a vendored copy for everyday use, updated by hand, in one direction. No sync script ships here.
 
@@ -75,6 +75,20 @@ Behaviour you can rely on:
 - It never edits layouts, keys or settings, never opens or restarts the app, never needs elevated rights, downloads, the network, provider calls or collector records, and never creates `.envrc` files or switches accounts.
 
 It finds `herdr-app` on `PATH` or at `~/.local/bin/herdr-app`. It is POSIX `sh` and has been exercised on Linux only, where `/bin/sh` is bash; it has not been run on Windows, dash, BSD or macOS, so run the report first there.
+
+### Other ways to install it
+
+You can hand this repository's URL to Claude Code, Codex or any other agent: Herdr's own guide in the app home, `~/.config/herdr-app/AGENTS.md`, tells it how to install a mod.
+
+A mod is only a folder of JavaScript, so it can also be copied straight into the app home:
+
+```sh
+cp -R mods/fleet-quota ~/.config/herdr-app/mods/
+herdr-app check ~/.config/herdr-app/mods/fleet-quota
+herdr-app do mod.open --name fleet-quota
+```
+
+That is the manual route. It does not install the optional headless helper, and its `herdr-app check` runs on the installed copy, after it lands. If you already have a mod named `fleet-quota`, rename the new folder instead of overwriting it: Herdr's rule is that a name already taken is renamed, never replaced. The installer above stays the recommended path, for exactly the reasons in the paragraphs above it: it refuses to overwrite an existing mod and validates a temporary copy before anything reaches the app home.
 
 ### Optional: top-bar badge
 

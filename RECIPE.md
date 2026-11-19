@@ -2,7 +2,9 @@
 
 A Herdr mod that shows which AI providers still have capacity across every machine in your fleet: a compact badge carrying the decisive percent of quota used for a bar, and a dialog with the reported quota per machine, provider and account.
 
-> The preview image is `docs/preview.png`: a real capture of this dialog with the LAN host address blurred out. No other workstation content is in it.
+![Fleet quota](preview.png)
+
+> The preview image is `preview.png` at the repository root: a real capture of this dialog with the LAN host address blurred out. No other workstation content is in it.
 
 ## What you see
 
