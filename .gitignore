@@ -9,3 +9,7 @@ mods/*/*.d.ts
 *.tmp
 *.log
 herdr-shot*.png
+
+# Python bytecode from local compile checks.
+__pycache__/
+*.pyc
