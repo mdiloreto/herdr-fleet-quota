@@ -1,6 +1,6 @@
 {
   "name": "herdr-fleet-quota",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "type": "module",
   "description": "Per-machine AI quota readings for Herdr, using existing local collector records.",
