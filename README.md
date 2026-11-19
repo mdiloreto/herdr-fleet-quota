@@ -172,7 +172,9 @@ systemctl --user disable --now herdr-fleet-quota-refresh.timer
 
 then delete only these three files and reload: `~/.local/bin/herdr-fleet-quota-refresh`, `~/.config/systemd/user/herdr-fleet-quota-refresh.service` and `~/.config/systemd/user/herdr-fleet-quota-refresh.timer` (use `$XDG_CONFIG_HOME` if you set it), then `systemctl --user daemon-reload`. Its control files in `$XDG_STATE_HOME/herdr-fleet-quota/` may be deleted once the timer is off. The provider records in the Omarchy usage folder are collector output: if nothing refreshes them any more they simply become stale and the viewer says so. There is no version manager or rollback: to update, disable the timer, review the differences, remove those three files and install again. Never delete a broader folder.
 
-**Verification status.** The helper has fake-collector and synthetic-fixture tests (`tests/refresh.test.cjs`) and has refreshed Claude, Copilot and Codex successfully on the existing Linux host without a desktop session. Those live readings were verified in the Mac viewer. A clean-machine run with newly established logins remains a separate beta requirement; existing-host success is not a claim that authentication is automatic.
+**Verification status.** The helper has fake-collector and synthetic-fixture tests (`tests/refresh.test.cjs`) and has refreshed Claude, Copilot and Codex successfully on the existing Linux host without a desktop session. Those live readings were verified in the Mac viewer.
+
+A fresh user was also qualified end to end from a clean clone of the release, with no prior state: on a Mac, `sh scripts/install.sh --install` into an isolated Herdr app home passed the real `herdr-app check`, and a second install was a no-op; on Linux, `scripts/install-refresh.sh --install --providers "codex gemini"` into an isolated `HOME` wrote a unit naming exactly those providers with its timeout sized to them, and a cycle published a fresh record for each. What is not qualified is a clean machine with newly established provider logins: existing-host success is not a claim that authentication is automatic.
 
 ## How the viewer reads
 
