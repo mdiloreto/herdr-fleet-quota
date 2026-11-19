@@ -760,6 +760,26 @@ function installFixture(t, verifyExit = 0) {
   x.target = path.join(x.home, '.local/bin/herdr-fleet-quota-refresh');
   return x;
 }
+test('a closed stdout never turns a refresh into a silent failure', (t) => {
+  const x = fixture(t);
+  collector(x, 'copilot', `test "$OMARCHY_PATH" = '${x.omarchy}' || exit 9\n${live(record('copilot'))}`);
+  // The helper's diagnostics go to the journal. When that pipe is gone, the
+  // refresh must still happen and the exit status must still say what it means.
+  const script = `import importlib.util, os, sys
+sys.stdout.close()
+sys.argv = [${JSON.stringify(helper)}, 'copilot']
+spec = importlib.util.spec_from_file_location('refresh', ${JSON.stringify(helper)})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+sys.exit(module.main())`;
+  const r = spawnSync('python3', ['-B', '-c', script], {
+    env: x.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  assert.equal(r.status, 0, `closed stdout must not fail the run: ${r.stderr}`);
+  assert.equal(saved(x, 'copilot').limitsStale, false, 'the refresh still happened');
+  assert.equal(calls(x), 'copilot --limits-only\n');
+});
+
 test('installer checks by default, installs idempotently without activation', (t) => {
   const x = installFixture(t);
   assert.equal(x.install([]).status, 0);

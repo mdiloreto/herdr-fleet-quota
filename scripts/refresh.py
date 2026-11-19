@@ -129,8 +129,13 @@ raise SystemExit(main())
 
 
 def log(provider: str, message: str, stream: Any = None) -> None:
-    print(f"herdr-fleet-quota-refresh: {provider}: {message}",
-          file=sys.stdout if stream is None else stream, flush=True)
+    try:
+        print(f"herdr-fleet-quota-refresh: {provider}: {message}",
+              file=sys.stdout if stream is None else stream, flush=True)
+    except (OSError, ValueError):
+        # A closed or broken stdout (a journal pipe that went away) must not turn
+        # a refresh into an unexplained failure: the work still happened.
+        pass
 
 
 def collectors(bin_dir: Path) -> list[str]:
@@ -442,6 +447,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        code = main()
     except KeyboardInterrupt:
-        sys.exit(130)
+        code = 130
+    try:
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        # stdout is gone (a journal pipe that closed). Point it at devnull so
+        # the interpreter's final flush cannot raise or change the exit status.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except OSError:
+            pass
+    sys.exit(code)
