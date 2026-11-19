@@ -149,7 +149,8 @@ test("checking guard renders honest empty states without reads or timers", () =>
   assert.ok(visible(mod.panel(COLORS)).includes("Reported quota"));
   mod.refreshedAt = Date.now();
   assert.ok(visible(mod.bar(COLORS)).includes("Unverified"));
-  assert.ok(!texts(mod.bar(COLORS)).some((text) => text.includes("no providers available")));
+  assert.ok(texts(mod.bar(COLORS)).some((text) => text.includes("No provider has confirmed remaining quota")),
+    "the empty badge states the real reason");
 });
 
 test("bar shows one qualifying provider icon and the honest percentage used", () => {
@@ -223,7 +224,7 @@ test("same provider shares one chip but retains independent host/account evidenc
   assert.equal(nodes(panel).filter((node) => node.id === "fleet-available-claude").length, 1);
 });
 
-test("a group keeps the credits of the reading that decides, else the first reading with a balance", () => {
+test("a group keeps the tightest credit among its readings", () => {
   const accounts = (workBalance) => host(null, [{ id: "claude", accounts: [
     { label: "Work", active: true, fetchedAt: Date.now(), limits: [{ label: "Week", percent: 0.8 }],
       balance: workBalance ? { remaining: 5, currency: "USD" } : null },
@@ -231,10 +232,10 @@ test("a group keeps the credits of the reading that decides, else the first read
   ] }]);
   const fallback = loaded([accounts(false)]).availableProviders(Date.now())[0];
   assert.equal(Math.round(fallback.used), 80);
-  assert.equal(fallback.remaining, 12, "the deciding reading has no balance, so the first one with credits stands");
+  assert.equal(fallback.remaining, 12, "the only reading with credits stands");
   assert.equal(fallback.currency, "USD");
   const own = loaded([accounts(true)]).availableProviders(Date.now())[0];
-  assert.equal(own.remaining, 5, "the deciding reading's own credits, not the first found");
+  assert.equal(own.remaining, 5, "the tightest credit stands, not the first found");
 });
 
 test("positive unmetered balances qualify without an allowlist; tiny, zero and estimated values are honest", () => {
@@ -244,7 +245,8 @@ test("positive unmetered balances qualify without an allowlist; tiny, zero and e
     { id: "zero", balance: { remaining: 0, currency: "USD" } },
     { id: "estimated", balance: { remaining: 2, estimated: true, currency: "USD" } },
   ])]);
-  assert.deepEqual(barIds(mod), ["fireworks"], "no percentage: the badge falls back to the first provider with credits");
+  assert.deepEqual(barIds(mod), ["openrouter"], "no percentage: the badge falls back to the tightest credit, not the first provider");
+  assert.equal(byId(mod.bar(COLORS), "fleet-bar-credits").text[0], "<0.01 USD", "the balance that runs out first is the one shown");
   const panel = mod.panel(COLORS), text = visible(panel);
   assert.ok(text.includes("<0.01 USD remaining"));
   assert.ok(text.includes("30.00 USD remaining"), "not clamped to funded");
@@ -318,7 +320,61 @@ test("the decisive number is the provider closest to exhaustion, not the first b
   assert.equal(byId(bar, "fleet-bar-used").text[0], "74%");
   assert.equal(byId(bar, "fleet-bar-more").text[0], "+1");
   assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /Quota used: 74% of Codex · Month\./);
-  assert.match(byId(bar, "fleet-bar-more").props.tooltip, /Claude: 26% used/, "the pill explains the providers it counts");
+  assert.match(byId(bar, "fleet-bar-more").props.tooltip, /Claude: .*26% used/, "the pill explains the providers it counts");
+});
+
+test("the badge credits fallback shows the tightest balance, not the first provider", () => {
+  const mod = loaded([host(null, [
+    { id: "fireworks", balance: { remaining: 30, currency: "USD" } },
+    { id: "openrouter", balance: { remaining: 0.004, currency: "USD" } },
+  ])]);
+  const bar = mod.bar(COLORS);
+  assert.deepEqual(barIds(mod), ["openrouter"], "the balance that runs out first leads the badge");
+  assert.equal(byId(bar, "fleet-bar-credits").text[0], "<0.01 USD");
+  assert.equal(byId(bar, "fleet-bar-used"), undefined, "a credit balance never becomes a percentage");
+  assert.match(byId(bar, "fleet-quota-bar").props.tooltip, /^Credits remaining: <0\.01 USD on OpenRouter\./);
+  assert.match(byId(bar, "fleet-bar-more").props.tooltip, /Fireworks: .*30\.00 USD remaining/,
+    "every provider's own credits stay in the tooltip");
+});
+
+test("the badge number can shrink instead of overhanging the badge", () => {
+  const mod = loaded([host(null, [
+    { id: "claude", limits: [{ label: "Week", percent: 0.0001 }] },
+    { id: "copilot", limits: [{ label: "Week", percent: 0.26 }] },
+  ])]);
+  const number = byId(mod.bar(COLORS), "fleet-bar-used");
+  assert.equal(number.props.min_w, 0, "the number may shrink to fit the badge");
+  assert.equal(number.props.truncate, true, "and clips rather than pushing the layout");
+  assert.equal(number.props.flex_shrink, 1);
+});
+
+test("every number in the evidence belongs to the reading that reported it", () => {
+  const mod = loaded([host(null, [{ id: "claude", accounts: [
+    { label: "Work", active: true, fetchedAt: Date.now(), limits: [{ label: "Week", percent: 0.8 }],
+      balance: { remaining: 5, currency: "USD" } },
+    { label: "Personal", fetchedAt: Date.now(), limits: [{ label: "Week", percent: 0.2 }],
+      balance: { remaining: 12, currency: "USD" } },
+  ] }])]);
+  const evidence = byId(mod.bar(COLORS), "fleet-quota-bar").props.tooltip;
+  assert.ok(evidence.includes("Work"), "the account is named");
+  assert.ok(/Work[^;]*80% used[^;]*5\.00 USD remaining/.test(evidence),
+    `Work's percent and credits travel together: ${evidence}`);
+  assert.ok(/Personal[^;]*20% used[^;]*12\.00 USD remaining/.test(evidence),
+    `Personal's percent and credits travel together: ${evidence}`);
+  assert.ok(!/80% used · 12\.00 USD/.test(evidence), "no account's credit is attached to another account's percent");
+});
+
+test("an incomplete or not-ready reading never wears a green current pill", () => {
+  const incomplete = loaded([host(null, [{ id: "claude", limits: [{ percent: 0.2 }], limitsTruncated: true }])]);
+  const panel = incomplete.panel(COLORS);
+  assert.ok(!visible(panel).includes("current"), "an incomplete reading is not current");
+  assert.ok(visible(panel).includes("partial"), "it says what is wrong with it");
+  const notReady = loaded([host(null, [{ id: "claude", ready: false, limits: [{ percent: 0.2 }] }])]);
+  const other = notReady.panel(COLORS);
+  assert.ok(!visible(other).includes("current"), "a not-ready reading is not current");
+  assert.ok(visible(other).includes("not ready"));
+  const fresh = loaded([host(null, [{ id: "claude", limits: [{ percent: 0.2 }] }])]);
+  assert.ok(visible(fresh.panel(COLORS)).includes("current"), "a complete, ready reading still says current");
 });
 
 test("bar shows remaining credits when no available provider reports a percentage", () => {
