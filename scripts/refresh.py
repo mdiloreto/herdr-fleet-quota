@@ -5,7 +5,6 @@ import copy
 import fcntl
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import stat
@@ -13,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 MAX_BYTES = 256 * 1024

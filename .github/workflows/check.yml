@@ -18,3 +18,21 @@ jobs:
       # No dependencies: fixtures and syntax only.
       - run: npm test
       - run: npm run check
+
+  # Keeps the release and Python helper scripts honest: shellcheck plus ruff.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck is missing from this runner image" >&2
+            exit 1
+          fi
+          shellcheck scripts/install.sh scripts/install-refresh.sh
+      # Pinned: a new ruff release must not break the build.
+      - name: ruff
+        run: |
+          python3 -m pip install --disable-pip-version-check ruff==0.16.6
+          python3 -m ruff check scripts/refresh.py

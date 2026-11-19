@@ -1,0 +1,9 @@
+# Deliberately narrow rule set: default correctness rules plus import sorting.
+# It is not the full rule catalogue on purpose, because this repository's code
+# is intentional where broader rules would object: the helper raises ValueError
+# (not TypeError) for malformed records so callers treat a bad record as
+# unusable instead of a crash, and the module docstring style plus the
+# single-letter locals in the collector adapters are deliberate.
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I"]
