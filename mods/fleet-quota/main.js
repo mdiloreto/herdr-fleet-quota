@@ -191,13 +191,15 @@ function creditLabel(remaining, currency) {
   return amount === null ? null : `${amount}${currency ? ` ${currency}` : ""}`;
 }
 
+// Every number travels with the reading it came from: a percent belongs to the
+// account that reported it, and so does a credit balance.
 function providerEvidence(group) {
-  const credits = creditLabel(group.remaining, group.currency);
-  const numbers = [usedText(group.used), credits && `${credits} remaining`].filter(Boolean).join(" · ")
-    || "no percentage";
-  return `${providerName(group.id)}: ${numbers} · ${group.readings.map(({ host, row }) => {
+  return `${providerName(group.id)}: ${group.readings.map(({ host, row }) => {
     const date = parseTime(row.updatedAt);
-    return `${accountIdentity(host, row)} · record ${date ? date.toLocaleString() : "time unknown"}`;
+    const usage = decisiveUsage(row);
+    const credits = creditLabel(usage.remaining, usage.currency);
+    const numbers = [usedText(usage.used), credits && `${credits} remaining`].filter(Boolean).join(" · ");
+    return `${accountIdentity(host, row)}${numbers ? ` · ${numbers}` : ""} · record ${date ? date.toLocaleString() : "time unknown"}`;
   }).join("; ")}`;
 }
 
@@ -268,12 +270,18 @@ export default class FleetQuota extends View {
       for (const usage of usages) {
         if (Number.isFinite(usage.used) && (!decisive || usage.used > decisive.used)) decisive = usage;
       }
-      const balance = decisive && Number.isFinite(decisive.remaining) ? decisive
-        : usages.find((usage) => Number.isFinite(usage.remaining)) ?? null;
+      // The tightest credit in the group, not the first one found: the badge
+      // shows the balance that runs out first, so it must be that one.
+      let tightest = null;
+      for (const usage of usages) {
+        if (Number.isFinite(usage.remaining) && (!tightest || usage.remaining < tightest.remaining)) {
+          tightest = usage;
+        }
+      }
       group.used = decisive ? decisive.used : null;
       group.label = decisive ? decisive.label : "";
-      group.remaining = balance ? balance.remaining : null;
-      group.currency = balance ? balance.currency : "";
+      group.remaining = tightest ? tightest.remaining : null;
+      group.currency = tightest ? tightest.currency : "";
     }
     return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -291,7 +299,11 @@ export default class FleetQuota extends View {
     for (const group of groups) {
       if (Number.isFinite(group.used) && (!decisive || group.used > decisive.used)) decisive = group;
     }
-    const funded = groups.find((group) => Number.isFinite(group.remaining)) ?? null;
+    // No provider reports a percentage: show the credit that runs out first.
+    let funded = null;
+    for (const group of groups) {
+      if (Number.isFinite(group.remaining) && (!funded || group.remaining < funded.remaining)) funded = group;
+    }
     const lead = decisive ?? funded;
     const others = groups.filter((group) => group !== lead);
     const headline = decisive
@@ -320,10 +332,12 @@ export default class FleetQuota extends View {
       .when(Boolean(lead), (el) => el
         .child(tile(t, providerIcon(lead.id), providerColor(t, lead.id), 24)
           .id(`fleet-bar-provider-${lead.id}`).tooltip(providerEvidence(lead)).accessibility_label(providerEvidence(lead)))
-        .when(Boolean(decisive), (inner) => inner.child(div().id("fleet-bar-used").flex_none()
+        .when(Boolean(decisive), (inner) => inner.child(div().id("fleet-bar-used").flex_none().min_w(0)
+          .flex_shrink(1).truncate()
           .text_size(11).font_semibold().text_color(providerColor(t, decisive.id))
           .child(usedText(decisive.used).replace(/ used$/, ""))))
-        .when(Boolean(funded) && !decisive, (inner) => inner.child(div().id("fleet-bar-credits").flex_none()
+        .when(Boolean(funded) && !decisive, (inner) => inner.child(div().id("fleet-bar-credits").flex_none().min_w(0)
+          .flex_shrink(1).truncate()
           .text_size(11).font_semibold().text_color(providerColor(t, funded.id))
           .child(creditLabel(funded.remaining, funded.currency)))))
       .when(others.length > 0, (el) => el.child(div().id("fleet-bar-more").w(26).flex_none().text_size(10)
@@ -526,7 +540,15 @@ export default class FleetQuota extends View {
     const color = providerColor(t, row?.id);
     const stale = hostStatus !== "ok" || Boolean(row?.stale) || (Number.isFinite(row?.freshUntil) && now > row.freshUntil);
     const availability = availabilityOf(row, { hostStatus, now });
-    const freshness = !Number.isFinite(row?.freshUntil) ? "time unknown" : stale ? "old" : "current";
+    // The pill states the reading's real condition, so it can never contradict
+    // the reason under it: a green "current" belongs to a complete, ready reading.
+    const freshness = stale ? "old"
+      : row?.ready === false ? "not ready"
+      : row?.incomplete ? "partial"
+      : !Number.isFinite(row?.freshUntil) ? "time unknown"
+      : "current";
+    const freshnessColor = freshness === "current" ? t.done
+      : freshness === "old" || freshness === "partial" ? t.working : t.muted;
     const name = providerName(row?.id);
     return v_flex()
       .id(`fleet-provider-${hostIndex}-${rowIndex}`)
@@ -541,14 +563,13 @@ export default class FleetQuota extends View {
             .when(Boolean(row?.accountLabel), (el) => el.child(div().text_size(11).text_color(t.muted)
               .min_w(0).truncate().tooltip(row.accountLabel).accessibility_label(row.accountLabel).child(row.accountLabel)))
             .child(updated ?? div().text_size(11).text_color(t.muted).child("Record time unknown")))
-          .child(pill(t, freshness, freshness === "current" ? t.done : t.working)),
+          .child(pill(t, freshness, freshnessColor)),
       )
       .child(div().id(`fleet-availability-${hostIndex}-${rowIndex}`).text_size(11)
         .text_color(availability.state === "available" ? t.done : availability.state === "exhausted" ? t.working : t.muted)
         .child(availability.reason))
-      .when(Boolean(row?.accountLabel || row?.incomplete), (el) => el.child(h_flex().gap(6).items_center().flex_wrap().min_w(0)
-        .when(Boolean(row?.accountLabel), (el) => el.child(pill(t, row.accountActive ? "active on host" : "not active on host", color)))
-        .when(Boolean(row?.incomplete), (el) => el.child(pill(t, "incomplete", t.working)))))
+      .when(Boolean(row?.accountLabel), (el) => el.child(h_flex().gap(6).items_center().flex_wrap().min_w(0)
+        .child(pill(t, row.accountActive ? "active on host" : "not active on host", color))))
       .when(!windows.length, (el) => el.child(div().text_size(11).text_color(t.dim).child("No quota reported.")))
       .children(windows.map((w, index) => this.window(t, w, row, hostIndex, rowIndex, index, now, stale)));
   }
