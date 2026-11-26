@@ -16,10 +16,10 @@ from pathlib import Path
 from typing import Any
 
 MAX_BYTES = 256 * 1024
-# A collector may pay a cold local-stats scan: the native --limits-only path
-# reuses a cached scan for 900 s and then re-runs it, which measured 48 s for
-# Codex on a real host while a warm probe takes 1 s. The bound has to clear a
-# real scan, not only a warm one, or the reading goes stale every 15 minutes.
+# A native collector may pay a cold local-stats scan: its --limits-only path
+# reuses a cached scan for 900 s and then re-runs it, which measured 48 s on a
+# real host while a warm probe takes 1 s. The bound has to clear a real scan,
+# not only a warm one, or the reading goes stale every 15 minutes.
 TIMEOUT = 100
 COLLECTOR_PREFIX = "omarchy-agent-usage-"
 # Batch updater shipped beside the per-provider collectors, not a provider.
@@ -127,9 +127,10 @@ sys.argv = [sys.argv[1], '--limits-only']
 raise SystemExit(main())
 """
 
-# Same idea for Antigravity: its --limits-only still scans local history when the
-# cached scan is older than 900 s, which costs minutes and gigabytes.
-AGY_QUOTA_BOOTSTRAP = """
+# Same idea for Codex and Antigravity: their --limits-only still scans local
+# history once the cached scan expires, which can cost minutes and gigabytes.
+# PROVIDER and ARITY (of cached_local_stats) are prepended per provider.
+CACHED_STATS_BOOTSTRAP = """
 import inspect
 import runpy
 import sys
@@ -141,15 +142,15 @@ try:
         raise ValueError('unsupported main')
     scope = main.__globals__
     cached_local_stats = scope.get('cached_local_stats')
-    if (scope.get('AGENT_ID') != 'agy' or not callable(cached_local_stats)
+    if (scope.get('AGENT_ID') != PROVIDER or not callable(cached_local_stats)
             or 'cached_local_stats' not in main.__code__.co_names):
         raise ValueError('unsupported collector')
     inspect.signature(main).bind()
-    inspect.signature(cached_local_stats).bind(None, 0)
+    inspect.signature(cached_local_stats).bind(*[None] * ARITY)
 except Exception:
     raise SystemExit(78) from None
 
-def no_history(root, max_age):
+def no_history(*args):
     return {'hasLocalStats': False}
 
 scope['cached_local_stats'] = no_history
@@ -160,7 +161,11 @@ raise SystemExit(main())
 # a probe made about 60 s after a success, so it waits longer.
 SUCCESS_INTERVAL = {"claude": 150}
 DEFAULT_SUCCESS_INTERVAL = 60
-QUOTA_ONLY_BOOTSTRAPS = {"claude": CLAUDE_QUOTA_BOOTSTRAP, "agy": AGY_QUOTA_BOOTSTRAP}
+QUOTA_ONLY_BOOTSTRAPS = {
+    "claude": CLAUDE_QUOTA_BOOTSTRAP,
+    "codex": "PROVIDER, ARITY = 'codex', 1\n" + CACHED_STATS_BOOTSTRAP,
+    "agy": "PROVIDER, ARITY = 'agy', 2\n" + CACHED_STATS_BOOTSTRAP,
+}
 
 
 def log(provider: str, message: str, stream: Any = None) -> None:
