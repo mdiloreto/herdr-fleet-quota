@@ -85,6 +85,29 @@ if __name__ == '__main__':
 `, { mode: 0o755 });
     return;
   }
+  if (id === 'agy') {
+    fs.writeFileSync(file, `#!/usr/bin/env python3
+import json,os,subprocess,sys
+from pathlib import Path
+AGENT_ID='agy'
+def cached_local_stats(root,max_age):
+    (Path(os.environ['HOME'])/'history-touched').write_text('must not scan')
+    raise RuntimeError('history scan must be bypassed')
+def main():
+    stats=cached_local_stats(Path(os.environ['HOME']),900)
+    assert stats == {'hasLocalStats': False}
+    with (Path(os.environ['HOME'])/'calls').open('a') as calls:
+        calls.write('agy '+' '.join(sys.argv[1:])+'\\n')
+    result=subprocess.run(['/bin/sh','-c',${JSON.stringify(body)}],stdout=subprocess.PIPE)
+    record=json.loads(result.stdout)
+    record.update(stats)
+    print(json.dumps(record))
+if __name__ == '__main__':
+    (Path(os.environ['HOME'])/'cli-fallback').write_text('must not execute CLI')
+    main()
+`, { mode: 0o755 });
+    return;
+  }
   fs.writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "${id} $*" >> "$HOME/calls"\n${body}\n`, { mode: 0o755 });
 }
 const record = (id, fields = {}) => ({ id, updatedAt: new Date().toISOString(),
@@ -813,4 +836,51 @@ test('user units are bounded oneshot with no credentials or global writes', () =
   assert.match(timer, /^OnBootSec=30s$/m);
   assert.match(timer, /^OnUnitInactiveSec=60s$/m);
   assert.doesNotMatch(service + timer, /Environment=|TOKEN|sudo|\/home\//);
+});
+
+test('success spacing is 150 s for Claude and 60 s for other providers', (t) => {
+  const x = fixture(t);
+  for (const id of ['claude', 'copilot']) collector(x, id, live(record(id)));
+  assert.equal(run(x).status, 0);
+  const next = (id) => JSON.parse(fs.readFileSync(path.join(x.control, `${id}.state`))).next - Date.now() / 1000;
+  assert.ok(Math.abs(next('claude') - 150) < 10, String(next('claude')));
+  assert.ok(Math.abs(next('copilot') - 60) < 10, String(next('copilot')));
+});
+
+test('agy runs through the quota-only adapter and never scans local history', (t) => {
+  const x = fixture(t);
+  collector(x, 'agy', live(record('agy')));
+  const r = run(x, ['agy']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(calls(x), 'agy --limits-only\n');
+  assert.equal(saved(x, 'agy').limitsStale, false);
+  assert.equal(saved(x, 'agy').hasLocalStats, false);
+  assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+  assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+});
+
+test('unsupported agy private interface fails closed without scanning or CLI fallback', (t) => {
+  const mutations = [
+    source => source.replace("AGENT_ID='agy'", "AGENT_ID='other'"),
+    source => source.replace('def main():', 'def main(required):'),
+    source => source.replace('def cached_local_stats(root,max_age):', 'def cached_local_stats():'),
+    source => source + '\ncached_local_stats = None\n',
+    source => source + '\nmain = None\n',
+    source => source.replace('stats=cached_local_stats(', 'stats=dict(').replace("assert stats == {'hasLocalStats': False}", 'stats={}'),
+  ];
+  for (const mutate of mutations) {
+    const x = fixture(t), old = record('agy');
+    prior(x, 'agy', old);
+    collector(x, 'agy', live(record('agy')));
+    const file = path.join(x.omarchy, 'bin', 'omarchy-agent-usage-agy');
+    fs.writeFileSync(file, mutate(fs.readFileSync(file, 'utf8')));
+    const r = run(x, ['agy']);
+    assert.equal(r.status, 1);
+    assert.match(r.stdout, /agy: quota-only adapter unavailable or incompatible; no CLI fallback \(exit 78\)/);
+    assert.doesNotMatch(r.stdout + r.stderr, /Traceback|RuntimeError/);
+    assert.equal(calls(x), '');
+    assert.deepEqual(saved(x, 'agy'), { ...old, limitsStale: true });
+    assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+    assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+  }
 });
