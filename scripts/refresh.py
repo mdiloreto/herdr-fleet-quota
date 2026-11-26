@@ -17,9 +17,9 @@ from typing import Any
 
 MAX_BYTES = 256 * 1024
 # A native collector may pay a cold local-stats scan: its --limits-only path
-# reuses a cached scan for 900 s and then re-runs it, which measured 48 s on a
-# real host while a warm probe takes 1 s. The bound has to clear a real scan,
-# not only a warm one, or the reading goes stale every 15 minutes.
+# reuses a cached scan for 900 s and then re-runs it, which measured 48 s for
+# Codex's native path on a real host while a warm probe takes 1 s. The bound has
+# to clear a real scan, not only a warm one, or the reading goes stale.
 TIMEOUT = 100
 COLLECTOR_PREFIX = "omarchy-agent-usage-"
 # Batch updater shipped beside the per-provider collectors, not a provider.
@@ -150,7 +150,7 @@ try:
 except Exception:
     raise SystemExit(78) from None
 
-def no_history(*args):
+def no_history(*args, **kwargs):
     return {'hasLocalStats': False}
 
 scope['cached_local_stats'] = no_history

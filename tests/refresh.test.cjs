@@ -757,7 +757,7 @@ test('the collector bound clears a measured cold scan and a slow collector still
   const x = fixture(t);
   const bound = harness(x, 'print(m.TIMEOUT); sys.exit(0)');
   const seconds = Number(bound.stdout.trim());
-  // 48 s is a measured cold local-stats scan on a real host, while a warm
+  // 48 s is a measured cold scan on Codex's native path, while a warm
   // probe takes 1 s. A bound below that turns a native collector's reading
   // stale every 15 minutes, when the --limits-only scan cache expires.
   assert.ok(seconds >= 48, `collector bound ${seconds}s cannot clear a 48 s cold scan`);
