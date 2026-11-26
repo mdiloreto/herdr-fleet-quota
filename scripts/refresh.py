@@ -127,6 +127,41 @@ sys.argv = [sys.argv[1], '--limits-only']
 raise SystemExit(main())
 """
 
+# Same idea for Antigravity: its --limits-only still scans local history when the
+# cached scan is older than 900 s, which costs minutes and gigabytes.
+AGY_QUOTA_BOOTSTRAP = """
+import inspect
+import runpy
+import sys
+
+try:
+    native = runpy.run_path(sys.argv[1], run_name='herdr_quota_adapter')
+    main = native.get('main')
+    if not inspect.isfunction(main):
+        raise ValueError('unsupported main')
+    scope = main.__globals__
+    cached_local_stats = scope.get('cached_local_stats')
+    if (scope.get('AGENT_ID') != 'agy' or not callable(cached_local_stats)
+            or 'cached_local_stats' not in main.__code__.co_names):
+        raise ValueError('unsupported collector')
+    inspect.signature(main).bind()
+    inspect.signature(cached_local_stats).bind(None, 0)
+except Exception:
+    raise SystemExit(78) from None
+
+def no_history(root, max_age):
+    return {'hasLocalStats': False}
+
+scope['cached_local_stats'] = no_history
+sys.argv = [sys.argv[1], '--limits-only']
+raise SystemExit(main())
+"""
+# Seconds to wait after a successful pass. Claude's usage endpoint rate limits
+# a probe made about 60 s after a success, so it waits longer.
+SUCCESS_INTERVAL = {"claude": 150}
+DEFAULT_SUCCESS_INTERVAL = 60
+QUOTA_ONLY_BOOTSTRAPS = {"claude": CLAUDE_QUOTA_BOOTSTRAP, "agy": AGY_QUOTA_BOOTSTRAP}
+
 
 def log(provider: str, message: str, stream: Any = None) -> None:
     try:
@@ -302,8 +337,9 @@ def merge(new: dict[str, Any], old: dict[str, Any], started_ms: int,
 
 
 def collect(executable: Path, environment: dict[str, str], provider: str) -> dict[str, Any]:
-    command = ([sys.executable, "-B", "-c", CLAUDE_QUOTA_BOOTSTRAP, str(executable)]
-               if provider == "claude" else [str(executable), "--limits-only"])
+    bootstrap = QUOTA_ONLY_BOOTSTRAPS.get(provider)
+    command = ([sys.executable, "-B", "-c", bootstrap, str(executable)]
+               if bootstrap else [str(executable), "--limits-only"])
     with tempfile.TemporaryFile() as output:
         process = subprocess.Popen(command, env=environment,
                                    stdin=subprocess.DEVNULL, stdout=output,
@@ -311,7 +347,7 @@ def collect(executable: Path, environment: dict[str, str], provider: str) -> dic
         try:
             code = process.wait(timeout=TIMEOUT)
             if code:
-                if provider == "claude" and code == 78:
+                if bootstrap and code == 78:
                     log(provider, "quota-only adapter unavailable or incompatible; no CLI fallback (exit 78)")
                 else:
                     log(provider, f"collector failed (exit {code})")
@@ -382,7 +418,8 @@ def refresh(provider: str, usage: Path, control: Path, environment: dict[str, st
             success = False
         atomic(destination, record)
         if success:
-            atomic(state_path, {"failures": 0, "next": int(time.time()) + 60})
+            atomic(state_path, {"failures": 0, "next": int(time.time())
+                                 + SUCCESS_INTERVAL.get(provider, DEFAULT_SUCCESS_INTERVAL)})
             log(provider, "fresh quota published")
         else:
             log(provider, f"stale/unknown quota published; retry deferred {delay}s")
