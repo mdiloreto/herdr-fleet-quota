@@ -23,6 +23,7 @@ function fixture(t) {
     OMARCHY_PATH: omarchy, TMPDIR: home };
   return { home, state, usage, control, omarchy, env };
 }
+const CACHED_STATS_SIGNATURES = { codex: 'max_age', agy: 'root,max_age' };
 function collector(x, id, body, payload = false) {
   const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
   if (id === 'claude') {
@@ -85,26 +86,28 @@ if __name__ == '__main__':
 `, { mode: 0o755 });
     return;
   }
-  if (id === 'agy') {
+  if (id in CACHED_STATS_SIGNATURES) {
     fs.writeFileSync(file, `#!/usr/bin/env python3
 import json,os,subprocess,sys
 from pathlib import Path
-AGENT_ID='agy'
-def cached_local_stats(root,max_age):
+AGENT_ID='${id}'
+def cached_local_stats(${CACHED_STATS_SIGNATURES[id]}):
     (Path(os.environ['HOME'])/'history-touched').write_text('must not scan')
     raise RuntimeError('history scan must be bypassed')
 def main():
-    stats=cached_local_stats(Path(os.environ['HOME']),900)
+    stats=cached_local_stats(${id === 'agy' ? "Path(os.environ['HOME'])," : ''}900)
     assert stats == {'hasLocalStats': False}
     with (Path(os.environ['HOME'])/'calls').open('a') as calls:
-        calls.write('agy '+' '.join(sys.argv[1:])+'\\n')
+        calls.write('${id} '+' '.join(sys.argv[1:])+'\\n')
     result=subprocess.run(['/bin/sh','-c',${JSON.stringify(body)}],stdout=subprocess.PIPE)
+    if result.returncode:
+        return result.returncode
     record=json.loads(result.stdout)
     record.update(stats)
     print(json.dumps(record))
 if __name__ == '__main__':
     (Path(os.environ['HOME'])/'cli-fallback').write_text('must not execute CLI')
-    main()
+    raise SystemExit(main())
 `, { mode: 0o755 });
     return;
   }
@@ -459,16 +462,19 @@ test('missing Claude does not prevent Copilot refreshing', (t) => {
   assert.equal(calls(x), 'copilot --limits-only\n');
 });
 
-test('Codex refreshes through its native limits-only path', (t) => {
+test('Codex runs through the quota-only adapter and never scans local history', (t) => {
   const x = fixture(t);
   collector(x, 'codex', live(record('codex')));
-  assert.equal(run(x, ['codex']).status, 0);
+  const r = run(x, ['codex']);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(calls(x), 'codex --limits-only\n');
   const output = saved(x, 'codex');
   assert.equal(output.id, 'codex');
   assert.equal(output.limitsStale, false);
+  assert.equal(output.hasLocalStats, false);
   assert.equal(output.limits[0].percent, 1);
   assert.equal(fs.statSync(path.join(x.usage, 'codex.json')).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
   assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
 });
 
@@ -751,9 +757,9 @@ test('the collector bound clears a measured cold scan and a slow collector still
   const x = fixture(t);
   const bound = harness(x, 'print(m.TIMEOUT); sys.exit(0)');
   const seconds = Number(bound.stdout.trim());
-  // 48 s is a measured cold local-stats scan for Codex on a real host, while
-  // a warm probe takes 1 s. A bound below that turns the reading stale every
-  // 15 minutes, when the native --limits-only scan cache expires.
+  // 48 s is a measured cold local-stats scan on a real host, while a warm
+  // probe takes 1 s. A bound below that turns a native collector's reading
+  // stale every 15 minutes, when the --limits-only scan cache expires.
   assert.ok(seconds >= 48, `collector bound ${seconds}s cannot clear a 48 s cold scan`);
   collector(x, 'copilot', `sleep 2\n${live(record('copilot'))}`);
   const r = run(x, ['copilot']);
@@ -859,28 +865,32 @@ test('agy runs through the quota-only adapter and never scans local history', (t
   assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
 });
 
-test('unsupported agy private interface fails closed without scanning or CLI fallback', (t) => {
-  const mutations = [
-    source => source.replace("AGENT_ID='agy'", "AGENT_ID='other'"),
-    source => source.replace('def main():', 'def main(required):'),
-    source => source.replace('def cached_local_stats(root,max_age):', 'def cached_local_stats():'),
-    source => source + '\ncached_local_stats = None\n',
-    source => source + '\nmain = None\n',
-    source => source.replace('stats=cached_local_stats(', 'stats=dict(').replace("assert stats == {'hasLocalStats': False}", 'stats={}'),
-  ];
-  for (const mutate of mutations) {
-    const x = fixture(t), old = record('agy');
-    prior(x, 'agy', old);
-    collector(x, 'agy', live(record('agy')));
-    const file = path.join(x.omarchy, 'bin', 'omarchy-agent-usage-agy');
-    fs.writeFileSync(file, mutate(fs.readFileSync(file, 'utf8')));
-    const r = run(x, ['agy']);
-    assert.equal(r.status, 1);
-    assert.match(r.stdout, /agy: quota-only adapter unavailable or incompatible; no CLI fallback \(exit 78\)/);
-    assert.doesNotMatch(r.stdout + r.stderr, /Traceback|RuntimeError/);
-    assert.equal(calls(x), '');
-    assert.deepEqual(saved(x, 'agy'), { ...old, limitsStale: true });
-    assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
-    assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
-  }
-});
+for (const [id, otherId] of [['codex', 'agy'], ['agy', 'codex']]) {
+  test(`unsupported ${id} private interface fails closed without scanning or CLI fallback`, (t) => {
+    const definition = `def cached_local_stats(${CACHED_STATS_SIGNATURES[id]}):`;
+    const mutations = [
+      source => source.replace(`AGENT_ID='${id}'`, `AGENT_ID='${otherId}'`),
+      source => source.replace('def main():', 'def main(required):'),
+      source => source.replace(definition, 'def cached_local_stats():'),
+      source => source.replace(definition, `def cached_local_stats(${CACHED_STATS_SIGNATURES[otherId]}):`),
+      source => source + '\ncached_local_stats = None\n',
+      source => source + '\nmain = None\n',
+      source => source.replace('stats=cached_local_stats(', 'stats=dict(').replace("assert stats == {'hasLocalStats': False}", 'stats={}'),
+    ];
+    for (const mutate of mutations) {
+      const x = fixture(t), old = record(id);
+      prior(x, id, old);
+      collector(x, id, live(record(id)));
+      const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
+      fs.writeFileSync(file, mutate(fs.readFileSync(file, 'utf8')));
+      const r = run(x, [id]);
+      assert.equal(r.status, 1);
+      assert.match(r.stdout, new RegExp(`${id}: quota-only adapter unavailable or incompatible; no CLI fallback \\(exit 78\\)`));
+      assert.doesNotMatch(r.stdout + r.stderr, /Traceback|RuntimeError/);
+      assert.equal(calls(x), '');
+      assert.deepEqual(saved(x, id), { ...old, limitsStale: true });
+      assert.equal(fs.existsSync(path.join(x.home, 'history-touched')), false);
+      assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
+    }
+  });
+}
