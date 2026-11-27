@@ -865,6 +865,23 @@ test('agy runs through the quota-only adapter and never scans local history', (t
   assert.equal(fs.existsSync(path.join(x.home, 'cli-fallback')), false);
 });
 
+// Google omits the Gemini quota group unless the client names a recent agy CLI.
+for (const [id, sent] of [['agy', /^antigravity\/cli\/\d+\.\d+\.\d+ 8$/], ['codex', /^antigravity 8$/]]) {
+  test(`${id} quota requests ${id === 'agy' ? 'name a versioned Antigravity CLI' : 'keep the collector client name'}`, (t) => {
+    const x = fixture(t);
+    collector(x, id, live(record(id)));
+    const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('def main():', `import urllib.request
+def open_json(request, timeout=10):
+    (Path(os.environ['HOME'])/'sent').write_text(f"{request.get_header('User-agent')} {timeout}")
+def main():
+    open_json(urllib.request.Request('https://quota.invalid', headers={'User-Agent': 'antigravity'}), timeout=8)`));
+    const r = run(x, [id]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(fs.readFileSync(path.join(x.home, 'sent'), 'utf8'), sent);
+  });
+}
+
 for (const [id, otherId] of [['codex', 'agy'], ['agy', 'codex']]) {
   test(`unsupported ${id} private interface fails closed without scanning or CLI fallback`, (t) => {
     const definition = `def cached_local_stats(${CACHED_STATS_SIGNATURES[id]}):`;
