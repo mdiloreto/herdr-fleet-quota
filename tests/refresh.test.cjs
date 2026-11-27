@@ -867,7 +867,7 @@ test('agy runs through the quota-only adapter and never scans local history', (t
 
 // Google omits the Gemini quota group unless the client names a recent agy CLI.
 for (const [name, id, own, sent] of [
-  ['the bare agy client name is replaced by a versioned CLI name', 'agy', 'antigravity', /^antigravity\/cli\/\d+\.\d+\.\d+ 8$/],
+  ['the bare agy client name is replaced by a versioned CLI name', 'agy', 'antigravity', /^antigravity\/cli\/1\.5\.18 8$/],
   ['an agy collector that names a client itself is left alone', 'agy', 'antigravity/cli/9.9.9', /^antigravity\/cli\/9\.9\.9 8$/],
   ['codex quota requests keep the collector client name', 'codex', 'antigravity', /^antigravity 8$/],
 ]) {
@@ -877,9 +877,15 @@ for (const [name, id, own, sent] of [
     const file = path.join(x.omarchy, 'bin', `omarchy-agent-usage-${id}`);
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('def main():', `import urllib.request
 def open_json(request, timeout=10):
+    if isinstance(request, str):
+        return request
     (Path(os.environ['HOME'])/'sent').write_text(f"{request.get_header('User-agent')} {timeout}")
+    return 'answer'
 def main():
-    open_json(urllib.request.Request('https://quota.invalid', headers={'User-Agent': '${own}'}), timeout=8)`));
+    assert open_json(urllib.request.Request('https://quota.invalid', headers={'User-Agent': '${own}'}), timeout=8) == 'answer'
+    # Anything but a request object passes through untouched.
+    assert open_json('https://quota.invalid') == 'https://quota.invalid'
+    assert open_json(request='https://quota.invalid') == 'https://quota.invalid'`));
     const r = run(x, [id]);
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.match(fs.readFileSync(path.join(x.home, 'sent'), 'utf8'), sent);
