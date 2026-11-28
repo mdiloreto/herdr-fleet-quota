@@ -154,6 +154,10 @@ def no_history(*args, **kwargs):
     return {'hasLocalStats': False}
 
 scope['cached_local_stats'] = no_history
+# Google omits the Gemini quota group unless the client names a recent agy CLI, and Omarchy
+# sends only "antigravity". Delete this override once Omarchy's collector is fixed.
+if PROVIDER == 'agy' and 'open_json' in scope:
+    scope['open_json'] = lambda *args, _send=scope['open_json'], **options: (args and getattr(args[0], 'headers', {}).get('User-agent') == 'antigravity' and args[0].add_header('User-Agent', 'antigravity/cli/1.5.18')) or _send(*args, **options)
 sys.argv = [sys.argv[1], '--limits-only']
 raise SystemExit(main())
 """
